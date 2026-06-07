@@ -1,0 +1,1 @@
+{"Modules":[{"Key":"","Source":"","Dir":"."},{"Key":"iam","Source":"./modules/iam","Dir":"modules/iam"},{"Key":"monitoring","Source":"./modules/monitoring","Dir":"modules/monitoring"},{"Key":"sqs","Source":"./modules/sqs","Dir":"modules/sqs"},{"Key":"vpc","Source":"./modules/vpc","Dir":"modules/vpc"}]}
