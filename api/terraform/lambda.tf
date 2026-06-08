@@ -1,8 +1,6 @@
 # Package the Lambda code into a zip file
-data "archive_file" "lambda_zip" {
-  type        = "zip"
-  source_dir  = "${path.module}/../lambda"
-  output_path = "${path.module}/lambda_function.zip"
+locals {
+  lambda_zip = "${path.module}/../lambda/lambda_function.zip"
 }
 
 resource "aws_lambda_function" "cev_api" {
@@ -10,8 +8,8 @@ resource "aws_lambda_function" "cev_api" {
   role             = var.lambda_role_arn
   handler          = "handler.lambda_handler"
   runtime          = "python3.11"
-  filename         = data.archive_file.lambda_zip.output_path
-  source_code_hash = data.archive_file.lambda_zip.output_base64sha256
+  filename         = local.lambda_zip
+  source_code_hash = filebase64sha256(local.lambda_zip)
   timeout          = 30
   memory_size      = 256
 
@@ -62,8 +60,8 @@ resource "aws_lambda_function" "cev_status_updater" {
   role             = var.lambda_role_arn
   handler          = "status_updater.lambda_handler"
   runtime          = "python3.11"
-  filename         = data.archive_file.lambda_zip.output_path
-  source_code_hash = data.archive_file.lambda_zip.output_base64sha256
+  filename         = local.lambda_zip
+  source_code_hash = filebase64sha256(local.lambda_zip)
   timeout          = 30
   memory_size      = 128
 

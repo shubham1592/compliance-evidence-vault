@@ -20,6 +20,21 @@ def get_db_conn():
 
 
 def lambda_handler(event, context):
+    # Special action: run arbitrary SQL (used for schema migration)
+    if event.get("action") == "run_schema":
+        sql = event.get("sql", "")
+        conn = get_db_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql)
+            conn.commit()
+            return {"statusCode": 200, "body": "Schema applied successfully"}
+        except Exception as e:
+            return {"statusCode": 500, "body": str(e)}
+        finally:
+            conn.close()
+
+    # Normal action: update job status
     job_id    = event.get("job_id")
     status    = event.get("status")
     error_msg = event.get("error_msg")
