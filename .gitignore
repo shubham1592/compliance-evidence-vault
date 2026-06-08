@@ -19,3 +19,5 @@ venv/
 # Lambda build artifacts
 api/lambda/package/
 api/lambda/lambda_function.zip
+awscliv2.zip
+aws/
