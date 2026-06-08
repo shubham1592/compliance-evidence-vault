@@ -109,7 +109,9 @@ resource "aws_api_gateway_deployment" "cev" {
   depends_on = [
     aws_api_gateway_integration.post_jobs,
     aws_api_gateway_integration.get_jobs,
-    aws_api_gateway_integration.get_job_id
+    aws_api_gateway_integration.get_job_id,
+    aws_api_gateway_integration.options_jobs,
+    aws_api_gateway_integration.options_job_id
   ]
 
   lifecycle {
@@ -130,4 +132,90 @@ resource "aws_lambda_permission" "api_gateway" {
   function_name = aws_lambda_function.cev_api.function_name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_api_gateway_rest_api.cev.execution_arn}/*/*"
+}
+
+# CORS for /jobs
+resource "aws_api_gateway_method" "options_jobs" {
+  rest_api_id   = aws_api_gateway_rest_api.cev.id
+  resource_id   = aws_api_gateway_resource.jobs.id
+  http_method   = "OPTIONS"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "options_jobs" {
+  rest_api_id = aws_api_gateway_rest_api.cev.id
+  resource_id = aws_api_gateway_resource.jobs.id
+  http_method = aws_api_gateway_method.options_jobs.http_method
+  type        = "MOCK"
+  request_templates = {
+    "application/json" = "{\"statusCode\": 200}"
+  }
+}
+
+resource "aws_api_gateway_method_response" "options_jobs" {
+  rest_api_id = aws_api_gateway_rest_api.cev.id
+  resource_id = aws_api_gateway_resource.jobs.id
+  http_method = aws_api_gateway_method.options_jobs.http_method
+  status_code = "200"
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = true
+    "method.response.header.Access-Control-Allow-Methods" = true
+    "method.response.header.Access-Control-Allow-Origin"  = true
+  }
+}
+
+resource "aws_api_gateway_integration_response" "options_jobs" {
+  rest_api_id = aws_api_gateway_rest_api.cev.id
+  resource_id = aws_api_gateway_resource.jobs.id
+  http_method = aws_api_gateway_method.options_jobs.http_method
+  status_code = "200"
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+    "method.response.header.Access-Control-Allow-Methods" = "'GET,POST,OPTIONS'"
+    "method.response.header.Access-Control-Allow-Origin"  = "'*'"
+  }
+  depends_on = [aws_api_gateway_integration.options_jobs]
+}
+
+# CORS for /jobs/{id}
+resource "aws_api_gateway_method" "options_job_id" {
+  rest_api_id   = aws_api_gateway_rest_api.cev.id
+  resource_id   = aws_api_gateway_resource.job_id.id
+  http_method   = "OPTIONS"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "options_job_id" {
+  rest_api_id = aws_api_gateway_rest_api.cev.id
+  resource_id = aws_api_gateway_resource.job_id.id
+  http_method = aws_api_gateway_method.options_job_id.http_method
+  type        = "MOCK"
+  request_templates = {
+    "application/json" = "{\"statusCode\": 200}"
+  }
+}
+
+resource "aws_api_gateway_method_response" "options_job_id" {
+  rest_api_id = aws_api_gateway_rest_api.cev.id
+  resource_id = aws_api_gateway_resource.job_id.id
+  http_method = aws_api_gateway_method.options_job_id.http_method
+  status_code = "200"
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = true
+    "method.response.header.Access-Control-Allow-Methods" = true
+    "method.response.header.Access-Control-Allow-Origin"  = true
+  }
+}
+
+resource "aws_api_gateway_integration_response" "options_job_id" {
+  rest_api_id = aws_api_gateway_rest_api.cev.id
+  resource_id = aws_api_gateway_resource.job_id.id
+  http_method = aws_api_gateway_method.options_job_id.http_method
+  status_code = "200"
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+    "method.response.header.Access-Control-Allow-Methods" = "'GET,OPTIONS'"
+    "method.response.header.Access-Control-Allow-Origin"  = "'*'"
+  }
+  depends_on = [aws_api_gateway_integration.options_job_id]
 }
