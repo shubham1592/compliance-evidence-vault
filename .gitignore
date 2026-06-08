@@ -15,3 +15,7 @@ venv/
 # AWS credentials
 *.pem
 .env*
+
+# Lambda build artifacts
+api/lambda/package/
+api/lambda/lambda_function.zip
