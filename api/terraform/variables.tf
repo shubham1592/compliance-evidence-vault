@@ -31,7 +31,7 @@ variable "rds_sg" {
 }
 
 variable "lambda_role_arn" {
-  default = "arn:aws:iam::126573932591:role/LabRole"
+  default = "arn:aws:iam::469174453369:role/LabRole"
 }
 
 variable "sqs_queue_url" {
