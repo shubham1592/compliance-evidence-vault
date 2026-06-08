@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Compliance Evidence Vault</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: #0d1117;
+      color: #c9d1d9;
+      min-height: 100vh;
+      padding: 2rem;
+    }
+
+    h1 {
+      color: #c8f250;
+      font-size: 1.6rem;
+      margin-bottom: 0.3rem;
+    }
+
+    .subtitle {
+      color: #8b949e;
+      font-size: 0.85rem;
+      margin-bottom: 2rem;
+    }
+
+    .config-bar {
+      display: flex;
+      gap: 0.75rem;
+      margin-bottom: 2rem;
+      flex-wrap: wrap;
+    }
+
+    .config-bar input {
+      flex: 1;
+      min-width: 200px;
+      padding: 0.5rem 0.75rem;
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      color: #c9d1d9;
+      font-size: 0.85rem;
+    }
+
+    .config-bar input::placeholder { color: #484f58; }
+
+    section {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 1.25rem;
+      margin-bottom: 1.5rem;
+    }
+
+    section h2 {
+      color: #c8f250;
+      font-size: 1rem;
+      margin-bottom: 1rem;
+    }
+
+    .form-row {
+      display: flex;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+      align-items: flex-end;
+    }
+
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 0.3rem;
+    }
+
+    label { font-size: 0.8rem; color: #8b949e; }
+
+    select, input[type="text"], input[type="file"] {
+      padding: 0.5rem 0.75rem;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      color: #c9d1d9;
+      font-size: 0.85rem;
+    }
+
+    button {
+      padding: 0.5rem 1.25rem;
+      background: #c8f250;
+      color: #0d1117;
+      border: none;
+      border-radius: 6px;
+      font-weight: 600;
+      font-size: 0.85rem;
+      cursor: pointer;
+      transition: opacity 0.2s;
+    }
+
+    button:hover { opacity: 0.85; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .btn-secondary {
+      background: #21262d;
+      color: #c9d1d9;
+      border: 1px solid #30363d;
+    }
+
+    .status-badge {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 20px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+
+    .status-PENDING  { background: #2d2d00; color: #e3b341; }
+    .status-RUNNING  { background: #0d2137; color: #58a6ff; }
+    .status-COMPLETED { background: #0d2b0d; color: #3fb950; }
+    .status-FAILED   { background: #2d0d0d; color: #f85149; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+    }
+
+    th {
+      text-align: left;
+      padding: 0.5rem 0.75rem;
+      border-bottom: 1px solid #30363d;
+      color: #8b949e;
+      font-weight: 500;
+    }
+
+    td {
+      padding: 0.6rem 0.75rem;
+      border-bottom: 1px solid #21262d;
+    }
+
+    tr:last-child td { border-bottom: none; }
+
+    tr:hover td { background: #1c2128; }
+
+    .clickable { cursor: pointer; color: #58a6ff; }
+    .clickable:hover { text-decoration: underline; }
+
+    .severity-HIGH   { color: #f85149; font-weight: 600; }
+    .severity-MEDIUM { color: #e3b341; font-weight: 600; }
+    .severity-LOW    { color: #3fb950; font-weight: 600; }
+
+    #job-detail {
+      display: none;
+    }
+
+    .detail-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1rem;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+
+    .detail-meta {
+      display: flex;
+      gap: 1.5rem;
+      font-size: 0.8rem;
+      color: #8b949e;
+      margin-bottom: 1rem;
+      flex-wrap: wrap;
+    }
+
+    .detail-meta span b { color: #c9d1d9; }
+
+    .error-box {
+      background: #2d0d0d;
+      border: 1px solid #f85149;
+      border-radius: 6px;
+      padding: 0.75rem 1rem;
+      color: #f85149;
+      font-size: 0.85rem;
+      margin-bottom: 1rem;
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 2rem;
+      color: #484f58;
+      font-size: 0.85rem;
+    }
+
+    .log {
+      font-size: 0.78rem;
+      color: #8b949e;
+      margin-top: 0.5rem;
+      min-height: 1.2rem;
+    }
+
+    .log.ok  { color: #3fb950; }
+    .log.err { color: #f85149; }
+  </style>
+</head>
+<body>
+
+<h1>Compliance Evidence Vault</h1>
+<p class="subtitle">CS6620 — Ankita Das · Shubham Kumar · Ishit Arhatia</p>
+
+<div class="config-bar">
+  <input id="cfg-url"    placeholder="API Gateway URL  e.g. https://xxx.execute-api.us-east-1.amazonaws.com/prod" />
+  <input id="cfg-apikey" placeholder="API Key value" />
+</div>
+
+<!-- Submit a new scan -->
+<section>
+  <h2>Submit New Scan</h2>
+  <div class="form-row">
+    <div class="form-group">
+      <label>Scan Type</label>
+      <select id="scan-type">
+        <option value="SAST">SAST</option>
+        <option value="PENTEST">PENTEST</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>Source ZIP</label>
+      <input type="file" id="scan-file" accept=".zip" />
+    </div>
+    <button id="btn-submit" onclick="submitJob()">Submit Job</button>
+  </div>
+  <p class="log" id="submit-log"></p>
+</section>
+
+<!-- Job list -->
+<section>
+  <h2>
+    All Jobs
+    <button class="btn-secondary" style="float:right;padding:3px 10px;font-size:0.8rem" onclick="loadJobs()">Refresh</button>
+  </h2>
+  <div id="jobs-table-wrap">
+    <p class="empty-state">Enter your API URL and key above, then click Refresh.</p>
+  </div>
+</section>
+
+<!-- Job detail -->
+<section id="job-detail">
+  <div class="detail-header">
+    <h2>Job Detail</h2>
+    <button class="btn-secondary" onclick="closeDetail()">Close</button>
+  </div>
+  <div class="detail-meta" id="detail-meta"></div>
+  <div id="detail-error"></div>
+  <div id="findings-wrap"></div>
+</section>
+
+<script>
+  // --- helpers ---
+  const $  = id => document.getElementById(id);
+  const cfg = () => ({
+    url:    $('cfg-url').value.trim().replace(/\/jobs$/, ''),
+    apikey: $('cfg-apikey').value.trim()
+  });
+
+  function headers() {
+    return { 'Content-Type': 'application/json', 'x-api-key': cfg().apikey };
+  }
+
+  function log(elId, msg, type='') {
+    const el = $(elId);
+    el.textContent = msg;
+    el.className = 'log ' + type;
+  }
+
+  // --- submit job ---
+  async function submitJob() {
+    const { url, apikey } = cfg();
+    if (!url || !apikey) { log('submit-log','Fill in API URL and key above.','err'); return; }
+
+    const scanType = $('scan-type').value;
+    const fileInput = $('scan-file');
+
+    $('btn-submit').disabled = true;
+    log('submit-log', 'Creating job...');
+
+    try {
+      // Step 1: create job, get pre-signed URL
+      const res = await fetch(`${url}/jobs`, {
+        method: 'POST',
+        headers: headers(),
+        body: JSON.stringify({ scan_type: scanType })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || res.statusText);
+
+      log('submit-log', `Job created: ${data.job_id} — uploading file...`);
+
+      // Step 2: upload file directly to S3 via pre-signed URL
+      if (fileInput.files.length > 0) {
+        const uploadRes = await fetch(data.upload_url, {
+          method: 'PUT',
+          body: fileInput.files[0]
+        });
+        if (!uploadRes.ok) throw new Error('S3 upload failed: ' + uploadRes.statusText);
+      }
+
+      log('submit-log', `Job ${data.job_id} submitted. Status: ${data.status}`, 'ok');
+      loadJobs();
+    } catch (e) {
+      log('submit-log', 'Error: ' + e.message, 'err');
+    } finally {
+      $('btn-submit').disabled = false;
+    }
+  }
+
+  // --- load job list ---
+  async function loadJobs() {
+    const { url, apikey } = cfg();
+    if (!url || !apikey) return;
+
+    try {
+      const res  = await fetch(`${url}/jobs`, { headers: headers() });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || res.statusText);
+
+      renderJobsTable(data.jobs || []);
+    } catch (e) {
+      $('jobs-table-wrap').innerHTML =
+        `<p class="empty-state" style="color:#f85149">Error loading jobs: ${e.message}</p>`;
+    }
+  }
+
+  function renderJobsTable(jobs) {
+    if (jobs.length === 0) {
+      $('jobs-table-wrap').innerHTML = '<p class="empty-state">No jobs yet.</p>';
+      return;
+    }
+
+    const rows = jobs.map(j => `
+      <tr>
+        <td class="clickable" onclick="loadJobDetail('${j.job_id}')">${j.job_id.slice(0,8)}…</td>
+        <td>${j.scan_type}</td>
+        <td><span class="status-badge status-${j.status}">${j.status}</span></td>
+        <td>${new Date(j.created_at).toLocaleString()}</td>
+        <td>${new Date(j.updated_at).toLocaleString()}</td>
+      </tr>`).join('');
+
+    $('jobs-table-wrap').innerHTML = `
+      <table>
+        <thead>
+          <tr>
+            <th>Job ID</th><th>Type</th><th>Status</th><th>Created</th><th>Updated</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  }
+
+  // --- job detail ---
+  async function loadJobDetail(jobId) {
+    const { url, apikey } = cfg();
+    try {
+      const res  = await fetch(`${url}/jobs/${jobId}`, { headers: headers() });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || res.statusText);
+
+      renderDetail(data);
+    } catch (e) {
+      alert('Error loading job: ' + e.message);
+    }
+  }
+
+  function renderDetail(job) {
+    $('job-detail').style.display = 'block';
+    $('job-detail').scrollIntoView({ behavior: 'smooth' });
+
+    $('detail-meta').innerHTML = `
+      <span><b>Job ID:</b> ${job.job_id}</span>
+      <span><b>Type:</b> ${job.scan_type}</span>
+      <span><b>Status:</b> <span class="status-badge status-${job.status}">${job.status}</span></span>
+      <span><b>Created:</b> ${new Date(job.created_at).toLocaleString()}</span>
+      <span><b>Updated:</b> ${new Date(job.updated_at).toLocaleString()}</span>`;
+
+    $('detail-error').innerHTML = job.error_msg
+      ? `<div class="error-box">Error: ${job.error_msg}</div>` : '';
+
+    if (!job.findings || job.findings.length === 0) {
+      $('findings-wrap').innerHTML = '<p class="empty-state">No findings for this job.</p>';
+      return;
+    }
+
+    const rows = job.findings.map(f => `
+      <tr>
+        <td class="severity-${f.severity}">${f.severity}</td>
+        <td>${f.vuln_type}</td>
+        <td>${f.detail || ''}</td>
+        <td>${new Date(f.created_at).toLocaleString()}</td>
+      </tr>`).join('');
+
+    $('findings-wrap').innerHTML = `
+      <table>
+        <thead>
+          <tr><th>Severity</th><th>Type</th><th>Detail</th><th>Found At</th></tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  }
+
+  function closeDetail() {
+    $('job-detail').style.display = 'none';
+  }
+
+  // auto-refresh every 10s if jobs are visible
+  setInterval(() => {
+    if ($('cfg-url').value) loadJobs();
+  }, 10000);
+</script>
+</body>
+</html>
