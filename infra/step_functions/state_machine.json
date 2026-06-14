@@ -1,0 +1,136 @@
+{
+  "Comment": "Orchestrates SAST and Pentest scanner tasks with retry and failure handling",
+  "StartAt": "RouteByType",
+
+  "States": {
+
+    "RouteByType": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.scan_type",
+          "StringEquals": "SAST",
+          "Next": "RunSASTScanner"
+        },
+        {
+          "Variable": "$.scan_type",
+          "StringEquals": "PENTEST",
+          "Next": "RunPentestScanner"
+        }
+      ],
+      "Default": "MarkJobFailed"
+    },
+
+    "RunSASTScanner": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::ecs:runTask.sync",
+      "Parameters": {
+        "LaunchType": "FARGATE",
+        "Cluster": "${ecs_cluster_arn}",
+        "TaskDefinition": "${sast_task_def_arn}",
+        "NetworkConfiguration": {
+          "AwsvpcConfiguration": {
+            "Subnets": ["${private_subnet_a_id}", "${private_subnet_b_id}"],
+            "SecurityGroups": ["${fargate_sg_id}"],
+            "AssignPublicIp": "DISABLED"
+          }
+        },
+        "Overrides": {
+          "ContainerOverrides": [{
+            "Name": "sast-scanner",
+            "Environment": [
+              { "Name": "JOB_ID", "Value.$": "$.job_id" },
+              { "Name": "S3_KEY",  "Value.$": "$.s3_key" }
+            ]
+          }]
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed", "ECS.AmazonECSException"],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "MarkJobFailed",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "MarkJobCompleted"
+    },
+
+    "RunPentestScanner": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::ecs:runTask.sync",
+      "Parameters": {
+        "LaunchType": "FARGATE",
+        "Cluster": "${ecs_cluster_arn}",
+        "TaskDefinition": "${pentest_task_def_arn}",
+        "NetworkConfiguration": {
+          "AwsvpcConfiguration": {
+            "Subnets": ["${private_subnet_a_id}", "${private_subnet_b_id}"],
+            "SecurityGroups": ["${fargate_sg_id}"],
+            "AssignPublicIp": "DISABLED"
+          }
+        },
+        "Overrides": {
+          "ContainerOverrides": [{
+            "Name": "pentest-scanner",
+            "Environment": [
+              { "Name": "JOB_ID",     "Value.$": "$.job_id"     },
+              { "Name": "TARGET_URL", "Value.$": "$.target_url" }
+            ]
+          }]
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed", "ECS.AmazonECSException"],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "MarkJobFailed",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "MarkJobCompleted"
+    },
+
+    "MarkJobCompleted": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${status_updater_lambda_arn}",
+        "Payload": {
+          "job_id.$": "$.job_id",
+          "status": "COMPLETED"
+        }
+      },
+      "End": true
+    },
+
+    "MarkJobFailed": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${status_updater_lambda_arn}",
+        "Payload": {
+          "job_id.$": "$.job_id",
+          "status": "FAILED",
+          "error.$": "$.error"
+        }
+      },
+      "End": true
+    }
+
+  }
+}
