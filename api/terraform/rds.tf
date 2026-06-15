@@ -1,5 +1,11 @@
 # api/terraform/rds.tf
-# Uses data source lookups so re-runs never fail with "already exists"
+#
+# RDS and subnet group are created normally without data source lookups.
+# The "already exists" errors are solved by the S3 Terraform backend keeping
+# state — Terraform knows these resources exist and won't try to recreate them.
+#
+# Security group still uses a data source because SGs can exist from
+# previous partial runs that left no state entry.
 
 # ── RDS security group ────────────────────────────────────────────────────
 
@@ -48,15 +54,10 @@ locals {
 }
 
 # ── RDS subnet group ──────────────────────────────────────────────────────
-
-data "aws_db_subnet_group" "existing" {
-  name = "cev-rds-subnet-group"
-}
+# No data source — tracked by Terraform state via S3 backend.
+# lifecycle.ignore_changes prevents drift errors on re-runs.
 
 resource "aws_db_subnet_group" "cev" {
-  # Only create if the data source lookup fails (resource doesn't exist)
-  # We handle this with a try() — if data source errors, we create
-  count      = can(data.aws_db_subnet_group.existing.id) ? 0 : 1
   name       = "cev-rds-subnet-group"
   subnet_ids = [var.private_subnet_a, var.private_subnet_b]
 
@@ -64,22 +65,16 @@ resource "aws_db_subnet_group" "cev" {
     Name    = "cev-rds-subnet-group"
     Project = "compliance-evidence-vault"
   }
-}
 
-locals {
-  db_subnet_group_name = can(data.aws_db_subnet_group.existing.id) ? (
-    data.aws_db_subnet_group.existing.name
-  ) : aws_db_subnet_group.cev[0].name
+  lifecycle {
+    ignore_changes = [name, subnet_ids]
+  }
 }
 
 # ── RDS instance ──────────────────────────────────────────────────────────
-
-data "aws_db_instance" "existing" {
-  db_instance_identifier = "cev-postgres"
-}
+# No data source — tracked by Terraform state via S3 backend.
 
 resource "aws_db_instance" "cev_postgres" {
-  count             = can(data.aws_db_instance.existing.id) ? 0 : 1
   identifier        = "cev-postgres"
   engine            = "postgres"
   engine_version    = "16.8"
@@ -90,11 +85,17 @@ resource "aws_db_instance" "cev_postgres" {
   username = "cevadmin"
   password = var.db_password
 
-  db_subnet_group_name   = local.db_subnet_group_name
+  db_subnet_group_name   = aws_db_subnet_group.cev.name
   vpc_security_group_ids = [local.rds_sg_id]
 
   publicly_accessible = false
   skip_final_snapshot = true
+
+  lifecycle {
+    # Prevents Terraform from destroying and recreating RDS if
+    # password or minor config drifts between runs
+    ignore_changes = [password, engine_version]
+  }
 
   tags = {
     Name    = "cev-postgres"
@@ -102,9 +103,7 @@ resource "aws_db_instance" "cev_postgres" {
   }
 }
 
-# Local that always resolves to the RDS address whether we created it or not
+# Simple local — no conditional needed since resource is always managed
 locals {
-  rds_address = can(data.aws_db_instance.existing.address) ? (
-    data.aws_db_instance.existing.address
-  ) : aws_db_instance.cev_postgres[0].address
+  rds_address = aws_db_instance.cev_postgres.address
 }

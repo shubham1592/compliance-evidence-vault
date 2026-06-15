@@ -1,15 +1,11 @@
 # api/terraform/outputs.tf
-# All references go through locals defined in rds.tf and s3.tf
-# Never reference count-based resources directly
 
 output "rds_endpoint" {
   value = local.rds_address
 }
 
 output "rds_arn" {
-  value = can(data.aws_db_instance.existing.db_instance_arn) ? (
-    data.aws_db_instance.existing.db_instance_arn
-  ) : aws_db_instance.cev_postgres[0].arn
+  value = aws_db_instance.cev_postgres.arn
 }
 
 output "rds_sg_id" {
