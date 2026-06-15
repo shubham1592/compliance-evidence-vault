@@ -1,12 +1,11 @@
 # api/terraform/lambda.tf
-# Uses data source lookup so re-runs never fail with "already exists"
 
 locals {
   lambda_zip = "${path.module}/../lambda/lambda_function.zip"
 }
 
-# ── Security group — create only if it doesn't exist ─────────────────────
-# Check if cev-lambda-sg already exists in this VPC
+# ── Security group ─────────────────────────────────────────────────────────
+
 data "aws_security_groups" "existing_lambda_sg" {
   filter {
     name   = "group-name"
@@ -18,9 +17,7 @@ data "aws_security_groups" "existing_lambda_sg" {
   }
 }
 
-# Create only when the data source returns no results
 resource "aws_security_group" "lambda_sg" {
-  # If the SG already exists this count = 0 and resource is skipped
   count       = length(data.aws_security_groups.existing_lambda_sg.ids) == 0 ? 1 : 0
   name        = "cev-lambda-sg"
   description = "Allow Lambda to reach RDS and AWS services"
@@ -39,7 +36,7 @@ resource "aws_security_group" "lambda_sg" {
   }
 }
 
-# Local that always resolves to the SG ID regardless of whether we created it
+# Always resolves to the SG ID whether we just created it or it already existed
 locals {
   lambda_sg_id = length(data.aws_security_groups.existing_lambda_sg.ids) > 0 ? (
     data.aws_security_groups.existing_lambda_sg.ids[0]
@@ -47,6 +44,9 @@ locals {
 }
 
 # ── Lambda functions ───────────────────────────────────────────────────────
+# Use local.rds_address and local.s3_bucket_id from rds.tf and s3.tf
+# Never reference aws_db_instance.cev_postgres or aws_s3_bucket.cev_reports
+# directly because those have count set
 
 resource "aws_lambda_function" "cev_api" {
   function_name    = "cev-api-handler"
@@ -65,11 +65,11 @@ resource "aws_lambda_function" "cev_api" {
 
   environment {
     variables = {
-      DB_HOST     = aws_db_instance.cev_postgres.address
+      DB_HOST     = local.rds_address      # from rds.tf local
       DB_NAME     = "compliancevault"
       DB_USER     = "cevadmin"
       DB_PASSWORD = var.db_password
-      S3_BUCKET   = aws_s3_bucket.cev_reports.bucket
+      S3_BUCKET   = local.s3_bucket_id     # from s3.tf local
       SQS_URL     = var.sqs_queue_url
     }
   }
@@ -97,7 +97,7 @@ resource "aws_lambda_function" "cev_status_updater" {
 
   environment {
     variables = {
-      DB_HOST     = aws_db_instance.cev_postgres.address
+      DB_HOST     = local.rds_address      # from rds.tf local
       DB_NAME     = "compliancevault"
       DB_USER     = "cevadmin"
       DB_PASSWORD = var.db_password

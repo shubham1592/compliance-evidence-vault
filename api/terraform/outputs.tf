@@ -1,6 +1,6 @@
 # api/terraform/outputs.tf
-# References locals from rds.tf and lambda.tf so outputs work
-# whether resources were just created or already existed
+# All references go through locals defined in rds.tf and s3.tf
+# Never reference count-based resources directly
 
 output "rds_endpoint" {
   value = local.rds_address
@@ -17,11 +17,11 @@ output "rds_sg_id" {
 }
 
 output "s3_bucket_name" {
-  value = aws_s3_bucket.cev_reports.bucket
+  value = local.s3_bucket_id
 }
 
 output "s3_bucket_arn" {
-  value = aws_s3_bucket.cev_reports.arn
+  value = local.s3_bucket_arn
 }
 
 output "api_gateway_url" {
