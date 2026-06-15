@@ -86,7 +86,7 @@ jobs:
           name: lambda-zip
           path: api/lambda/
 
-      - name: Write terraform.tfvars
+      - name: Write api/terraform/terraform.tfvars
         run: |
           cat > terraform.tfvars << EOF
           aws_region        = "us-east-1"
@@ -96,12 +96,21 @@ jobs:
           private_subnet_b  = "${{ secrets.PRIVATE_SUBNET_B }}"
           public_subnet     = "${{ secrets.PUBLIC_SUBNET }}"
           lambda_role_arn   = "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/LabRole"
+          lambda_sg_id      = "${{ secrets.LAMBDA_SG_ID }}"
+          rds_sg_id         = "${{ secrets.RDS_SG_ID }}"
           sqs_queue_url     = "${{ secrets.SQS_QUEUE_URL }}"
           sqs_queue_arn     = "${{ secrets.SQS_QUEUE_ARN }}"
           state_machine_arn = "${{ secrets.STATE_MACHINE_ARN }}"
           db_password       = "${{ secrets.DB_PASSWORD }}"
           s3_bucket_name    = "cev-reports-${{ secrets.AWS_ACCOUNT_ID }}"
           EOF
+
+      - name: Debug tfvars
+        run: |
+          echo "=== tfvars contents (secrets masked) ==="
+          grep -v "password\|db_pass" terraform.tfvars
+          echo "=== checking lambda_sg_id and rds_sg_id ==="
+          grep "lambda_sg_id\|rds_sg_id" terraform.tfvars
 
       - run: terraform init
 
