@@ -1,10 +1,9 @@
 # api/terraform/variables.tf
-# All hardcoded defaults removed — values come from GitHub Secrets
-# written into terraform.tfvars by the workflow at deploy time.
+# All values come from GitHub Secrets via terraform.tfvars written by workflow
+# No defaults — forces explicit values for everything
 
 variable "aws_region" {
-  description = "AWS region"
-  default     = "us-east-1"
+  default = "us-east-1"
 }
 
 variable "account_id" {
@@ -12,7 +11,7 @@ variable "account_id" {
 }
 
 variable "vpc_id" {
-  description = "VPC ID from Ishit's infra"
+  description = "VPC ID"
 }
 
 variable "private_subnet_a" {
@@ -28,11 +27,19 @@ variable "public_subnet" {
 }
 
 variable "lambda_role_arn" {
-  description = "LabRole ARN for Lambda execution"
+  description = "LabRole ARN for Lambda"
+}
+
+variable "lambda_sg_id" {
+  description = "Existing Lambda security group ID — from Phase 1 outputs"
+}
+
+variable "rds_sg_id" {
+  description = "Existing RDS security group ID — from Phase 1 outputs"
 }
 
 variable "sqs_queue_url" {
-  description = "SQS queue URL for job messages"
+  description = "SQS queue URL"
 }
 
 variable "sqs_queue_arn" {
@@ -44,6 +51,10 @@ variable "state_machine_arn" {
 }
 
 variable "db_password" {
-  description = "RDS master password — injected from GitHub Secret, never hardcoded"
+  description = "RDS master password"
   sensitive   = true
+}
+
+variable "s3_bucket_name" {
+  description = "S3 bucket name for reports and uploads"
 }

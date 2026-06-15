@@ -1,52 +1,10 @@
 # api/terraform/lambda.tf
+# No data source lookups — AWS Academy blocks DescribeSecurityGroups
+# Uses var.lambda_sg_id passed in from GitHub Secrets
 
 locals {
   lambda_zip = "${path.module}/../lambda/lambda_function.zip"
 }
-
-# ── Security group ─────────────────────────────────────────────────────────
-
-data "aws_security_groups" "existing_lambda_sg" {
-  filter {
-    name   = "group-name"
-    values = ["cev-lambda-sg"]
-  }
-  filter {
-    name   = "vpc-id"
-    values = [var.vpc_id]
-  }
-}
-
-resource "aws_security_group" "lambda_sg" {
-  count       = length(data.aws_security_groups.existing_lambda_sg.ids) == 0 ? 1 : 0
-  name        = "cev-lambda-sg"
-  description = "Allow Lambda to reach RDS and AWS services"
-  vpc_id      = var.vpc_id
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = {
-    Name    = "cev-lambda-sg"
-    Project = "compliance-evidence-vault"
-  }
-}
-
-# Always resolves to the SG ID whether we just created it or it already existed
-locals {
-  lambda_sg_id = length(data.aws_security_groups.existing_lambda_sg.ids) > 0 ? (
-    data.aws_security_groups.existing_lambda_sg.ids[0]
-  ) : aws_security_group.lambda_sg[0].id
-}
-
-# ── Lambda functions ───────────────────────────────────────────────────────
-# Use local.rds_address and local.s3_bucket_id from rds.tf and s3.tf
-# Never reference aws_db_instance.cev_postgres or aws_s3_bucket.cev_reports
-# directly because those have count set
 
 resource "aws_lambda_function" "cev_api" {
   function_name    = "cev-api-handler"
@@ -60,16 +18,16 @@ resource "aws_lambda_function" "cev_api" {
 
   vpc_config {
     subnet_ids         = [var.private_subnet_a, var.private_subnet_b]
-    security_group_ids = [local.lambda_sg_id]
+    security_group_ids = [var.lambda_sg_id]
   }
 
   environment {
     variables = {
-      DB_HOST     = local.rds_address      # from rds.tf local
+      DB_HOST     = local.rds_address
       DB_NAME     = "compliancevault"
       DB_USER     = "cevadmin"
       DB_PASSWORD = var.db_password
-      S3_BUCKET   = local.s3_bucket_id     # from s3.tf local
+      S3_BUCKET   = local.s3_bucket_id
       SQS_URL     = var.sqs_queue_url
     }
   }
@@ -77,6 +35,10 @@ resource "aws_lambda_function" "cev_api" {
   tags = {
     Name    = "cev-api-handler"
     Project = "compliance-evidence-vault"
+  }
+
+  lifecycle {
+    ignore_changes = [filename, source_code_hash]
   }
 }
 
@@ -92,12 +54,12 @@ resource "aws_lambda_function" "cev_status_updater" {
 
   vpc_config {
     subnet_ids         = [var.private_subnet_a, var.private_subnet_b]
-    security_group_ids = [local.lambda_sg_id]
+    security_group_ids = [var.lambda_sg_id]
   }
 
   environment {
     variables = {
-      DB_HOST     = local.rds_address      # from rds.tf local
+      DB_HOST     = local.rds_address
       DB_NAME     = "compliancevault"
       DB_USER     = "cevadmin"
       DB_PASSWORD = var.db_password
@@ -107,5 +69,9 @@ resource "aws_lambda_function" "cev_status_updater" {
   tags = {
     Name    = "cev-status-updater"
     Project = "compliance-evidence-vault"
+  }
+
+  lifecycle {
+    ignore_changes = [filename, source_code_hash]
   }
 }

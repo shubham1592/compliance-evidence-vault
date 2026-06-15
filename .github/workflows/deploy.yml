@@ -216,21 +216,23 @@ jobs:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
 
-      - name: Write terraform.tfvars
+      - name: Write api/terraform/terraform.tfvars
         run: |
           cat > terraform.tfvars << EOF
-          aws_region                = "us-east-1"
-          account_id                = "${{ secrets.AWS_ACCOUNT_ID }}"
-          project                   = "compliance-vault"
-          ecr_image_tag             = "latest"
-          vpc_id                    = "${{ secrets.VPC_ID }}"
-          private_subnet_ids        = ["${{ secrets.PRIVATE_SUBNET_A }}", "${{ secrets.PRIVATE_SUBNET_B }}"]
-          rds_security_group_id     = "${{ needs.api-terraform.outputs.rds_sg_id }}"
-          fargate_security_group_id = "${{ secrets.FARGATE_SG_ID }}"
-          report_bucket_name        = "${{ needs.api-terraform.outputs.s3_bucket_name }}"
-          db_host                   = "${{ needs.api-terraform.outputs.rds_endpoint }}"
-          db_name                   = "compliancevault"
-          db_user                   = "cevadmin"
+          aws_region        = "us-east-1"
+          account_id        = "${{ secrets.AWS_ACCOUNT_ID }}"
+          vpc_id            = "${{ secrets.VPC_ID }}"
+          private_subnet_a  = "${{ secrets.PRIVATE_SUBNET_A }}"
+          private_subnet_b  = "${{ secrets.PRIVATE_SUBNET_B }}"
+          public_subnet     = "${{ secrets.PUBLIC_SUBNET }}"
+          lambda_role_arn   = "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/LabRole"
+          lambda_sg_id      = "${{ secrets.LAMBDA_SG_ID }}"
+          rds_sg_id         = "${{ secrets.RDS_SG_ID }}"
+          sqs_queue_url     = "${{ secrets.SQS_QUEUE_URL }}"
+          sqs_queue_arn     = "${{ secrets.SQS_QUEUE_ARN }}"
+          state_machine_arn = "${{ secrets.STATE_MACHINE_ARN }}"
+          db_password       = "${{ secrets.DB_PASSWORD }}"
+          s3_bucket_name    = "cev-reports-${{ secrets.AWS_ACCOUNT_ID }}"
           EOF
 
       - run: terraform init
