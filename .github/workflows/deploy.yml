@@ -257,27 +257,39 @@ jobs:
 
       - name: Build and push SAST
         run: |
-          IMAGE=${{ needs.compute-terraform.outputs.sast_ecr_url }}
+          # Use output from compute job, fall back to constructing URL directly
+          IMAGE="${{ needs.compute-terraform.outputs.sast_ecr_url }}"
+          if [ -z "$IMAGE" ]; then
+            IMAGE="126573932591.dkr.ecr.us-east-1.amazonaws.com/compliance-vault-compute-sast-scanner"
+            echo "Output was empty — using constructed URL: $IMAGE"
+          fi
+          echo "Building image: $IMAGE"
           docker build -t $IMAGE:latest ./compute/sast-scanner/
           docker push $IMAGE:latest
+          echo "Pushed: $IMAGE:latest"
 
       - name: Build and push Pentest
         run: |
-          IMAGE=${{ needs.compute-terraform.outputs.pentest_ecr_url }}
+          IMAGE="${{ needs.compute-terraform.outputs.pentest_ecr_url }}"
+          if [ -z "$IMAGE" ]; then
+            IMAGE="126573932591.dkr.ecr.us-east-1.amazonaws.com/compliance-vault-compute-pentest-scanner"
+            echo "Output was empty — using constructed URL: $IMAGE"
+          fi
+          echo "Building image: $IMAGE"
           docker build -t $IMAGE:latest ./compute/pentest-scanner/
           docker push $IMAGE:latest
-
-      - name: Verify images
-        run: |
-          for repo in \
-            compliance-vault-compute-sast-scanner \
-            compliance-vault-compute-pentest-scanner; do
-            echo "=== $repo ==="
-            aws ecr describe-images \
-              --repository-name $repo --image-ids imageTag=latest \
-              --query "imageDetails[0].{Tag:imageTags[0],Pushed:imagePushedAt}" \
-              --output table
-          done
+          echo "Pushed: $IMAGE:latest"
+            - name: Verify images
+              run: |
+                for repo in \
+                  compliance-vault-compute-sast-scanner \
+                  compliance-vault-compute-pentest-scanner; do
+                  echo "=== $repo ==="
+                  aws ecr describe-images \
+                    --repository-name $repo --image-ids imageTag=latest \
+                    --query "imageDetails[0].{Tag:imageTags[0],Pushed:imagePushedAt}" \
+                    --output table
+                done
 
   # ── Step 6: Summary ────────────────────────────────────────────────────────
   summary:
