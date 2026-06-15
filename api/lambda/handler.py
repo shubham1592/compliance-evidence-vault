@@ -39,9 +39,14 @@ def response(status_code, body):
 
 
 def create_job(body):
-    scan_type = body.get("scan_type", "").upper()
+    scan_type  = body.get("scan_type", "").upper()
+    target_url = body.get("target_url", "")
+
     if scan_type not in ("SAST", "PENTEST"):
         return response(400, {"error": "scan_type must be SAST or PENTEST"})
+
+    if scan_type == "PENTEST" and not target_url:
+        return response(400, {"error": "target_url is required for PENTEST"})
 
     job_id = str(uuid.uuid4())
     s3_key = f"uploads/{job_id}/source.zip"
@@ -57,12 +62,63 @@ def create_job(body):
     finally:
         conn.close()
 
+    # For PENTEST — enqueue immediately, no file upload needed
+    if scan_type == "PENTEST":
+        sqs.send_message(
+            QueueUrl=SQS_URL,
+            MessageBody=json.dumps({
+                "job_id":     job_id,
+                "scan_type":  scan_type,
+                "target_url": target_url,
+                "s3_key":     ""
+            })
+        )
+        return response(201, {
+            "job_id":  job_id,
+            "status":  "PENDING",
+            "s3_key":  s3_key
+        })
+
+    # For SAST — return pre-signed URL; client calls /jobs/{id}/confirm after upload
     presigned_url = s3.generate_presigned_url(
         "put_object",
         Params={"Bucket": S3_BUCKET, "Key": s3_key},
-        ExpiresIn=300
+        ExpiresIn=3600
     )
 
+    return response(201, {
+        "job_id":     job_id,
+        "upload_url": presigned_url,
+        "s3_key":     s3_key,
+        "status":     "PENDING"
+    })
+
+
+def confirm_upload(job_id):
+    """
+    Called by the dashboard after the S3 upload completes.
+    Verifies the file exists in S3 then enqueues the job.
+    """
+    conn = get_db_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT scan_type, s3_key FROM jobs WHERE id=%s", (job_id,)
+            )
+            row = cur.fetchone()
+            if not row:
+                return response(404, {"error": "Job not found"})
+            scan_type, s3_key = row
+    finally:
+        conn.close()
+
+    # Verify file actually landed in S3
+    try:
+        s3.head_object(Bucket=S3_BUCKET, Key=s3_key)
+    except Exception:
+        return response(400, {"error": "File not found in S3 — upload may have failed"})
+
+    # Now safe to enqueue — file is confirmed present
     sqs.send_message(
         QueueUrl=SQS_URL,
         MessageBody=json.dumps({
@@ -72,12 +128,7 @@ def create_job(body):
         })
     )
 
-    return response(201, {
-        "job_id":     job_id,
-        "upload_url": presigned_url,
-        "s3_key":     s3_key,
-        "status":     "PENDING"
-    })
+    return response(200, {"job_id": job_id, "status": "PENDING", "queued": True})
 
 
 def get_job(job_id):
@@ -151,12 +202,19 @@ def lambda_handler(event, context):
         if method == "POST" and path == "/jobs":
             body = json.loads(event.get("body") or "{}")
             return create_job(body)
+
+        elif method == "POST" and params.get("id") and path.endswith("/confirm"):
+            return confirm_upload(params["id"])
+
         elif method == "GET" and params.get("id"):
             return get_job(params["id"])
+
         elif method == "GET" and path == "/jobs":
             return list_jobs()
+
         else:
             return response(404, {"error": "Route not found"})
+
     except Exception as e:
         print(f"ERROR: {e}")
         return response(500, {"error": "Internal server error", "detail": str(e)})

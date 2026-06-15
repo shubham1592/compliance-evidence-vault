@@ -7,6 +7,15 @@ on:
         description: "Type 'destroy' to tear down all infrastructure"
         required: false
         default: ""
+  push:
+    branches: [main]
+    paths:
+      - "api/lambda/**"
+      - "api/terraform/**"
+      - "api/frontend/**"
+      - "compute/sast-scanner/**"
+      - "compute/pentest-scanner/**"
+      - "compute/terraform/**"
 
 env:
   AWS_REGION:  us-east-1

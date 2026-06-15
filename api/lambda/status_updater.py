@@ -37,7 +37,7 @@ def lambda_handler(event, context):
     # Normal action: update job status
     job_id    = event.get("job_id")
     status    = event.get("status")
-    error_msg = event.get("error_msg")
+    error_msg = event.get("error_msg") or event.get("error")
 
     if not job_id or status not in ("RUNNING", "COMPLETED", "FAILED"):
         return {"statusCode": 400, "body": "Invalid input"}
@@ -45,14 +45,17 @@ def lambda_handler(event, context):
     conn = get_db_conn()
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE jobs
-                SET status = %s, error_msg = %s
-                WHERE id = %s
-                """,
-                (status, error_msg, job_id)
-            )
+            if status == "COMPLETED":
+                # Clear error_msg on success so stale retry errors don't show
+                cur.execute(
+                    "UPDATE jobs SET status=%s, error_msg=NULL WHERE id=%s",
+                    (status, job_id)
+                )
+            else:
+                cur.execute(
+                    "UPDATE jobs SET status=%s, error_msg=%s WHERE id=%s",
+                    (status, str(error_msg)[:500] if error_msg else None, job_id)
+                )
         conn.commit()
     finally:
         conn.close()
