@@ -235,6 +235,9 @@ jobs:
           s3_bucket_name    = "cev-reports-${{ secrets.AWS_ACCOUNT_ID }}"
           EOF
 
+      - name: Debug tfvars
+        run: cat terraform.tfvars | grep -v password | grep -v db_password
+
       - run: terraform init
       - run: terraform apply -auto-approve
 
