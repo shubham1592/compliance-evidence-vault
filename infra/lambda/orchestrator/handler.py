@@ -1,52 +1,59 @@
+"""
+cev-orchestrator Lambda
+infra/lambda/orchestrator.py
+Ishit's ownership — included here so the team has a complete picture.
+
+Triggered by SQS (cev-scan-queue).
+Reads DB_PASSWORD from SSM Parameter Store — never from env vars.
+Starts the Step Functions execution with db_password in the payload
+so ECS containers receive it as a runtime override.
+"""
+
 import json
-import boto3
 import os
-import logging
+import boto3
 
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+ssm    = boto3.client("ssm",            region_name="us-east-1")
+sfn    = boto3.client("stepfunctions",  region_name="us-east-1")
 
-sfn_client = boto3.client('stepfunctions')
+STATE_MACHINE_ARN = os.environ["STATE_MACHINE_ARN"]
+SSM_DB_PASSWORD   = os.environ.get("SSM_DB_PASSWORD_PATH", "/cev/db_password")
 
-STATE_MACHINE_ARN = os.environ['STATE_MACHINE_ARN']
+
+def get_db_password() -> str:
+    """Fetch DB_PASSWORD from SSM Parameter Store (SecureString)."""
+    resp = ssm.get_parameter(Name=SSM_DB_PASSWORD, WithDecryption=True)
+    return resp["Parameter"]["Value"]
 
 
-def handler(event, context):
-    """
-    Triggered by SQS. Reads each scan job message and
-    starts one Step Functions execution per job.
-    """
-    batch_item_failures = []
+def lambda_handler(event, context):
+    db_password = get_db_password()
 
-    for record in event['Records']:
-        message_id = record['messageId']
+    for record in event.get("Records", []):
+        body = json.loads(record["body"])
 
-        try:
-            body       = json.loads(record['body'])
-            job_id     = body['job_id']
-            scan_type  = body['scan_type']
-            s3_key     = body.get('s3_key')
-            target_url = body.get('target_url')
+        job_id    = body["job_id"]
+        scan_type = body["scan_type"]
+        s3_key    = body.get("s3_key", "")
+        target_url = body.get("target_url", "")
 
-            logger.info(f"Starting execution for job_id={job_id} scan_type={scan_type}")
+        payload = {
+            "job_id":      job_id,
+            "scan_type":   scan_type,
+            "db_password": db_password,   # passed as container override by state machine
+        }
 
-            execution_input = {
-                "job_id":     job_id,
-                "scan_type":  scan_type,
-                "s3_key":     s3_key,
-                "target_url": target_url
-            }
+        if scan_type == "SAST":
+            payload["s3_key"] = s3_key
+        elif scan_type == "PENTEST":
+            payload["target_url"] = target_url
 
-            response = sfn_client.start_execution(
-                stateMachineArn=STATE_MACHINE_ARN,
-                name=f"scan-{job_id}",
-                input=json.dumps(execution_input)
-            )
+        sfn.start_execution(
+            stateMachineArn = STATE_MACHINE_ARN,
+            name            = f"{scan_type.lower()}-{job_id}",
+            input           = json.dumps(payload),
+        )
 
-            logger.info(f"Started execution: {response['executionArn']}")
+        print(f"Started execution for job {job_id} ({scan_type})")
 
-        except Exception as e:
-            logger.error(f"Failed to process message {message_id}: {str(e)}")
-            batch_item_failures.append({"itemIdentifier": message_id})
-
-    return {"batchItemFailures": batch_item_failures}
+    return {"statusCode": 200}

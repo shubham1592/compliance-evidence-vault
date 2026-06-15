@@ -39,8 +39,9 @@
           "ContainerOverrides": [{
             "Name": "sast-scanner",
             "Environment": [
-              { "Name": "JOB_ID", "Value.$": "$.job_id" },
-              { "Name": "S3_KEY",  "Value.$": "$.s3_key" }
+              { "Name": "JOB_ID",       "Value.$": "$.job_id" },
+              { "Name": "S3_KEY",       "Value.$": "$.s3_key" },
+              { "Name": "DB_PASSWORD",  "Value.$": "$.db_password" }
             ]
           }]
         }
@@ -81,8 +82,9 @@
           "ContainerOverrides": [{
             "Name": "pentest-scanner",
             "Environment": [
-              { "Name": "JOB_ID",     "Value.$": "$.job_id"     },
-              { "Name": "TARGET_URL", "Value.$": "$.target_url" }
+              { "Name": "JOB_ID",       "Value.$": "$.job_id" },
+              { "Name": "TARGET_URL",   "Value.$": "$.target_url" },
+              { "Name": "DB_PASSWORD",  "Value.$": "$.db_password" }
             ]
           }]
         }

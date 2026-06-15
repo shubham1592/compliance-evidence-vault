@@ -1,0 +1,278 @@
+name: "Phase 2 — Deploy everything (API + Compute + Scanners)"
+
+on:
+  workflow_dispatch:
+
+env:
+  AWS_REGION:  us-east-1
+  AWS_ACCOUNT: "126573932591"
+  TF_VERSION:  "1.7.0"
+
+jobs:
+
+  # ── Step 1: Shubham's API layer ───────────────────────────────────────────
+  # Creates RDS, S3, API Gateway, Lambda functions
+  # Needs VPC_ID, PRIVATE_SUBNET_A, PRIVATE_SUBNET_B from Phase 1 secrets
+  api-terraform:
+    name: "Step 1 — API layer (RDS + S3 + API Gateway)"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: api/terraform
+    outputs:
+      rds_endpoint:   ${{ steps.out.outputs.rds_endpoint }}
+      rds_sg_id:      ${{ steps.out.outputs.rds_sg_id }}
+      s3_bucket_name: ${{ steps.out.outputs.s3_bucket_name }}
+      s3_bucket_arn:  ${{ steps.out.outputs.s3_bucket_arn }}
+      api_url:        ${{ steps.out.outputs.api_url }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Write api/terraform/terraform.tfvars
+        run: |
+          cat > terraform.tfvars << EOF
+          aws_region       = "us-east-1"
+          vpc_id           = "${{ secrets.VPC_ID }}"
+          private_subnet_a = "${{ secrets.PRIVATE_SUBNET_A }}"
+          private_subnet_b = "${{ secrets.PRIVATE_SUBNET_B }}"
+          db_password      = "${{ secrets.DB_PASSWORD }}"
+          sqs_url          = "${{ secrets.SQS_QUEUE_URL }}"
+          state_machine_arn = "${{ secrets.STATE_MACHINE_ARN }}"
+          EOF
+
+      - run: terraform init
+      - run: terraform apply -auto-approve
+
+      - name: Capture outputs
+        id: out
+        run: |
+          echo "rds_endpoint=$(terraform output -raw rds_endpoint)"     >> $GITHUB_OUTPUT
+          echo "rds_sg_id=$(terraform output -raw rds_sg_id)"           >> $GITHUB_OUTPUT
+          echo "s3_bucket_name=$(terraform output -raw s3_bucket_name)" >> $GITHUB_OUTPUT
+          echo "s3_bucket_arn=$(terraform output -raw s3_bucket_arn)"   >> $GITHUB_OUTPUT
+          echo "api_url=$(terraform output -raw api_gateway_url)"       >> $GITHUB_OUTPUT
+
+      - name: Show API layer outputs
+        run: |
+          echo "=== API layer deployed ==="
+          terraform output
+
+  # ── Step 2: Apply DB schema ───────────────────────────────────────────────
+  # Runs schema.sql on the newly created RDS via status_updater Lambda
+  apply-schema:
+    name: "Step 2 — Apply database schema"
+    runs-on: ubuntu-latest
+    needs: api-terraform
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Wait for RDS to be available
+        run: |
+          echo "Waiting for RDS to finish creating (can take 5-10 min)..."
+          aws rds wait db-instance-available \
+            --db-instance-identifier cev-postgres \
+            --region ${{ env.AWS_REGION }}
+          echo "RDS is available"
+
+      - name: Apply schema via Lambda
+        run: |
+          SCHEMA_SQL=$(cat api/schema.sql)
+          PAYLOAD=$(python3 -c "
+          import json, sys
+          sql = open('api/schema.sql').read()
+          print(json.dumps({'action': 'run_schema', 'sql': sql}))
+          ")
+          aws lambda invoke \
+            --function-name cev-status-updater \
+            --payload "$PAYLOAD" \
+            --cli-binary-format raw-in-base64-out \
+            /tmp/schema_out.json \
+            --region ${{ env.AWS_REGION }}
+          echo "Schema response:"
+          cat /tmp/schema_out.json
+
+  # ── Step 3: Store DB password in SSM ─────────────────────────────────────
+  # Ishit's orchestrator Lambda reads DB_PASSWORD from here at runtime
+  # so it never appears in environment variables or code
+  store-ssm:
+    name: "Step 3 — Store DB password in SSM"
+    runs-on: ubuntu-latest
+    needs: api-terraform
+
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Put DB_PASSWORD into SSM Parameter Store
+        run: |
+          aws ssm put-parameter \
+            --name "/cev/db_password" \
+            --value "${{ secrets.DB_PASSWORD }}" \
+            --type "SecureString" \
+            --overwrite \
+            --region ${{ env.AWS_REGION }}
+          echo "Stored /cev/db_password as SecureString"
+
+  # ── Step 4: Ankita's compute layer ───────────────────────────────────────
+  # Creates ECR repos, ECS cluster, Fargate task definitions
+  # Reads rds_endpoint from Step 1 outputs — no manual copy needed
+  compute-terraform:
+    name: "Step 4 — Compute layer (ECR + ECS + task defs)"
+    runs-on: ubuntu-latest
+    needs: [api-terraform, apply-schema]
+    defaults:
+      run:
+        working-directory: compute/terraform
+    outputs:
+      sast_task_arn:    ${{ steps.out.outputs.sast_task_arn }}
+      pentest_task_arn: ${{ steps.out.outputs.pentest_task_arn }}
+      ecs_cluster_arn:  ${{ steps.out.outputs.ecs_cluster_arn }}
+      sast_ecr_url:     ${{ steps.out.outputs.sast_ecr_url }}
+      pentest_ecr_url:  ${{ steps.out.outputs.pentest_ecr_url }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Write compute/terraform/terraform.tfvars
+        # rds_endpoint and s3_bucket_name come directly from Step 1 outputs
+        # no manual secrets needed for these
+        run: |
+          cat > terraform.tfvars << EOF
+          aws_region                = "us-east-1"
+          project                   = "compliance-vault"
+          ecr_image_tag             = "latest"
+          vpc_id                    = "${{ secrets.VPC_ID }}"
+          private_subnet_ids        = ["${{ secrets.PRIVATE_SUBNET_A }}", "${{ secrets.PRIVATE_SUBNET_B }}"]
+          rds_security_group_id     = "${{ needs.api-terraform.outputs.rds_sg_id }}"
+          fargate_security_group_id = "${{ secrets.FARGATE_SG_ID }}"
+          report_bucket_name        = "${{ needs.api-terraform.outputs.s3_bucket_name }}"
+          db_host                   = "${{ needs.api-terraform.outputs.rds_endpoint }}"
+          db_name                   = "compliancevault"
+          db_user                   = "cevadmin"
+          EOF
+
+      - run: terraform init
+      - run: terraform apply -auto-approve
+
+      - name: Capture outputs
+        id: out
+        run: |
+          echo "sast_task_arn=$(terraform output -raw sast_task_definition_arn)"    >> $GITHUB_OUTPUT
+          echo "pentest_task_arn=$(terraform output -raw pentest_task_definition_arn)" >> $GITHUB_OUTPUT
+          echo "ecs_cluster_arn=$(terraform output -raw ecs_cluster_arn)"           >> $GITHUB_OUTPUT
+          echo "sast_ecr_url=$(terraform output -raw sast_ecr_url)"                 >> $GITHUB_OUTPUT
+          echo "pentest_ecr_url=$(terraform output -raw pentest_ecr_url)"           >> $GITHUB_OUTPUT
+
+      - name: Show compute outputs
+        run: |
+          echo "=== Compute layer deployed ==="
+          terraform output
+
+  # ── Step 5: Build and push Docker images ─────────────────────────────────
+  # ECR repos now exist (Step 4 created them)
+  build-and-push:
+    name: "Step 5 — Build and push scanner images to ECR"
+    runs-on: ubuntu-latest
+    needs: compute-terraform
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push SAST image
+        run: |
+          IMAGE=${{ needs.compute-terraform.outputs.sast_ecr_url }}
+          docker build -t $IMAGE:latest ./compute/sast-scanner/
+          docker push $IMAGE:latest
+          echo "Pushed SAST: $IMAGE:latest"
+
+      - name: Build and push Pentest image
+        run: |
+          IMAGE=${{ needs.compute-terraform.outputs.pentest_ecr_url }}
+          docker build -t $IMAGE:latest ./compute/pentest-scanner/
+          docker push $IMAGE:latest
+          echo "Pushed Pentest: $IMAGE:latest"
+
+      - name: Verify both images are in ECR
+        run: |
+          for repo in \
+            compliance-vault-compute-sast-scanner \
+            compliance-vault-compute-pentest-scanner; do
+            echo "=== $repo ==="
+            aws ecr describe-images \
+              --repository-name $repo \
+              --image-ids imageTag=latest \
+              --query "imageDetails[0].{Tag:imageTags[0],Pushed:imagePushedAt,Bytes:imageSizeInBytes}" \
+              --output table
+          done
+
+  # ── Step 6: Final summary ─────────────────────────────────────────────────
+  summary:
+    name: "Step 6 — Deployment summary"
+    runs-on: ubuntu-latest
+    needs: [api-terraform, compute-terraform, build-and-push, store-ssm]
+
+    steps:
+      - name: Print everything
+        run: |
+          echo ""
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║        COMPLIANCE EVIDENCE VAULT — FULLY DEPLOYED           ║"
+          echo "╠══════════════════════════════════════════════════════════════╣"
+          echo "║  API URL:        ${{ needs.api-terraform.outputs.api_url }}"
+          echo "║  RDS endpoint:   ${{ needs.api-terraform.outputs.rds_endpoint }}"
+          echo "║  S3 bucket:      ${{ needs.api-terraform.outputs.s3_bucket_name }}"
+          echo "║  ECS cluster:    ${{ needs.compute-terraform.outputs.ecs_cluster_arn }}"
+          echo "║  SAST task def:  ${{ needs.compute-terraform.outputs.sast_task_arn }}"
+          echo "║  Pentest def:    ${{ needs.compute-terraform.outputs.pentest_task_arn }}"
+          echo "║  DB password:    stored at SSM /cev/db_password"
+          echo "╠══════════════════════════════════════════════════════════════╣"
+          echo "║  NEXT: Tell Ishit these task def ARNs for Step Functions:   ║"
+          echo "║  SAST:    ${{ needs.compute-terraform.outputs.sast_task_arn }}"
+          echo "║  PENTEST: ${{ needs.compute-terraform.outputs.pentest_task_arn }}"
+          echo "╚══════════════════════════════════════════════════════════════╝"

@@ -1,0 +1,74 @@
+name: "Phase 1 — Deploy VPC and base infrastructure (Ishit)"
+
+on:
+  workflow_dispatch:
+
+env:
+  AWS_REGION:  us-east-1
+  TF_VERSION:  "1.7.0"
+
+jobs:
+  infra-phase1:
+    name: Deploy VPC + SQS + IAM
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/terraform
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Write terraform.tfvars
+        # Phase 1 only needs credentials — VPC is created here
+        run: |
+          cat > terraform.tfvars << EOF
+          aws_region                 = "us-east-1"
+          account_id                 = "126573932591"
+          alert_email                = "${{ secrets.ALERT_EMAIL }}"
+          ecs_cluster_name           = "compliance-vault-compute-cluster"
+          orchestrator_lambda_name   = "cev-orchestrator"
+          rds_arn                    = "arn:aws:rds:us-east-1:126573932591:db:cev-postgres"
+          s3_bucket_arn              = "arn:aws:s3:::cev-reports-126573932591"
+          state_machine_arn          = "arn:aws:states:us-east-1:126573932591:stateMachine:cev-scan-orchestrator"
+          failure_handler_lambda_arn = "arn:aws:lambda:us-east-1:126573932591:function:cev-status-updater"
+          EOF
+
+      - name: Terraform init
+        run: terraform init
+
+      - name: Terraform apply
+        run: terraform apply -auto-approve
+
+      - name: Print outputs — COPY THESE INTO GITHUB SECRETS
+        run: |
+          echo ""
+          echo "========================================================"
+          echo "  COPY THESE VALUES INTO GITHUB SECRETS BEFORE PHASE 2"
+          echo "========================================================"
+          terraform output
+          echo ""
+          echo "VPC_ID            = $(terraform output -raw vpc_id            2>/dev/null || echo 'check outputs')"
+          echo "PRIVATE_SUBNET_A  = $(terraform output -raw private_subnet_a  2>/dev/null || echo 'check outputs')"
+          echo "PRIVATE_SUBNET_B  = $(terraform output -raw private_subnet_b  2>/dev/null || echo 'check outputs')"
+          echo "PUBLIC_SUBNET     = $(terraform output -raw public_subnet     2>/dev/null || echo 'check outputs')"
+          echo "FARGATE_SG_ID     = $(terraform output -raw fargate_sg        2>/dev/null || echo 'check outputs')"
+          echo "LAMBDA_SG_ID      = $(terraform output -raw lambda_sg         2>/dev/null || echo 'check outputs')"
+          echo "SQS_QUEUE_URL     = $(terraform output -raw sqs_queue_url     2>/dev/null || echo 'check outputs')"
+          echo "SQS_QUEUE_ARN     = $(terraform output -raw sqs_queue_arn     2>/dev/null || echo 'check outputs')"
+          echo "STATE_MACHINE_ARN = $(terraform output -raw state_machine_arn 2>/dev/null || echo 'check outputs')"
+          echo "========================================================"
