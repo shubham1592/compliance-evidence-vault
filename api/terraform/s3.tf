@@ -2,10 +2,6 @@
 # No data source lookup — S3 bucket is tracked by Terraform state via S3 backend.
 # force_destroy = true means re-runs won't fail if bucket already has objects.
 
-variable "s3_bucket_name" {
-  description = "S3 bucket name for scan reports and uploads"
-}
-
 resource "aws_s3_bucket" "cev_reports" {
   bucket        = var.s3_bucket_name
   force_destroy = true
