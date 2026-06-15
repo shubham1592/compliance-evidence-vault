@@ -1,10 +1,52 @@
 # api/terraform/lambda.tf
-# DB_PASSWORD now reads from var.db_password (GitHub Secret via tfvars)
-# instead of being hardcoded as "CEVpassword123!"
+# Uses data source lookup so re-runs never fail with "already exists"
 
 locals {
   lambda_zip = "${path.module}/../lambda/lambda_function.zip"
 }
+
+# ── Security group — create only if it doesn't exist ─────────────────────
+# Check if cev-lambda-sg already exists in this VPC
+data "aws_security_groups" "existing_lambda_sg" {
+  filter {
+    name   = "group-name"
+    values = ["cev-lambda-sg"]
+  }
+  filter {
+    name   = "vpc-id"
+    values = [var.vpc_id]
+  }
+}
+
+# Create only when the data source returns no results
+resource "aws_security_group" "lambda_sg" {
+  # If the SG already exists this count = 0 and resource is skipped
+  count       = length(data.aws_security_groups.existing_lambda_sg.ids) == 0 ? 1 : 0
+  name        = "cev-lambda-sg"
+  description = "Allow Lambda to reach RDS and AWS services"
+  vpc_id      = var.vpc_id
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name    = "cev-lambda-sg"
+    Project = "compliance-evidence-vault"
+  }
+}
+
+# Local that always resolves to the SG ID regardless of whether we created it
+locals {
+  lambda_sg_id = length(data.aws_security_groups.existing_lambda_sg.ids) > 0 ? (
+    data.aws_security_groups.existing_lambda_sg.ids[0]
+  ) : aws_security_group.lambda_sg[0].id
+}
+
+# ── Lambda functions ───────────────────────────────────────────────────────
 
 resource "aws_lambda_function" "cev_api" {
   function_name    = "cev-api-handler"
@@ -18,7 +60,7 @@ resource "aws_lambda_function" "cev_api" {
 
   vpc_config {
     subnet_ids         = [var.private_subnet_a, var.private_subnet_b]
-    security_group_ids = [aws_security_group.lambda_sg.id]
+    security_group_ids = [local.lambda_sg_id]
   }
 
   environment {
@@ -38,24 +80,6 @@ resource "aws_lambda_function" "cev_api" {
   }
 }
 
-resource "aws_security_group" "lambda_sg" {
-  name        = "cev-lambda-sg"
-  description = "Allow Lambda to reach RDS and AWS services"
-  vpc_id      = var.vpc_id
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = {
-    Name    = "cev-lambda-sg"
-    Project = "compliance-evidence-vault"
-  }
-}
-
 resource "aws_lambda_function" "cev_status_updater" {
   function_name    = "cev-status-updater"
   role             = var.lambda_role_arn
@@ -68,7 +92,7 @@ resource "aws_lambda_function" "cev_status_updater" {
 
   vpc_config {
     subnet_ids         = [var.private_subnet_a, var.private_subnet_b]
-    security_group_ids = [aws_security_group.lambda_sg.id]
+    security_group_ids = [local.lambda_sg_id]
   }
 
   environment {

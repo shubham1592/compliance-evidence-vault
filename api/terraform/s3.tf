@@ -1,36 +1,39 @@
+# api/terraform/s3.tf
+# Bucket name comes from var.s3_bucket_name — set in tfvars from GitHub Secret
+# Uses data source so re-runs don't fail if bucket already exists
+
+variable "s3_bucket_name" {
+  description = "S3 bucket name for scan reports and uploads"
+}
+
+data "aws_s3_bucket" "existing_reports" {
+  bucket = var.s3_bucket_name
+}
+
 resource "aws_s3_bucket" "cev_reports" {
-  bucket        = "cev-scan-reports-${var.account_id}"
+  # Only create if bucket doesn't already exist
+  count         = can(data.aws_s3_bucket.existing_reports.id) ? 0 : 1
+  bucket        = var.s3_bucket_name
   force_destroy = true
 
   tags = {
-    Name    = "cev-scan-reports"
+    Name    = "cev-reports"
     Project = "compliance-evidence-vault"
   }
 }
 
-# Block all public access
 resource "aws_s3_bucket_public_access_block" "cev_reports" {
-  bucket = aws_s3_bucket.cev_reports.id
+  count  = can(data.aws_s3_bucket.existing_reports.id) ? 0 : 1
+  bucket = aws_s3_bucket.cev_reports[0].id
 
   block_public_acls       = true
-  block_public_policy     = true
   ignore_public_acls      = true
+  block_public_policy     = true
   restrict_public_buckets = true
 }
 
-# Lifecycle: move reports to Glacier after 90 days
-resource "aws_s3_bucket_lifecycle_configuration" "cev_reports" {
-  bucket = aws_s3_bucket.cev_reports.id
-
-  rule {
-    id     = "archive-to-glacier"
-    status = "Enabled"
-
-    filter {}
-
-    transition {
-      days          = 90
-      storage_class = "GLACIER"
-    }
-  }
+# Always resolves to the bucket regardless of whether we created it
+locals {
+  s3_bucket_id  = can(data.aws_s3_bucket.existing_reports.id) ? data.aws_s3_bucket.existing_reports.id : aws_s3_bucket.cev_reports[0].id
+  s3_bucket_arn = can(data.aws_s3_bucket.existing_reports.arn) ? data.aws_s3_bucket.existing_reports.arn : aws_s3_bucket.cev_reports[0].arn
 }

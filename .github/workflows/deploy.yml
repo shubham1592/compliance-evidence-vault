@@ -14,35 +14,27 @@ env:
 
 jobs:
 
-  # ══════════════════════════════════════════════════════════════════════════
-  # STEP 1 — Build lambda_function.zip
-  # Must run before any Terraform because lambda.tf reads the zip at plan time
-  # ══════════════════════════════════════════════════════════════════════════
+  # ── Step 1: Build lambda zip ───────────────────────────────────────────────
   build-lambda:
     name: "1 — Build Lambda zip"
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install dependencies and zip
+      - name: Build zip
         run: |
           mkdir -p api/lambda/package
-          pip install \
-            psycopg2-binary==2.9.9 \
-            boto3==1.34.0 \
-            --target api/lambda/package \
-            --quiet
+          pip install psycopg2-binary==2.9.9 boto3==1.34.0 \
+            --target api/lambda/package --quiet
           cp api/lambda/handler.py        api/lambda/package/
           cp api/lambda/status_updater.py api/lambda/package/
           cd api/lambda/package
           zip -r ../lambda_function.zip . -q
           cd ../../..
-          echo "Built lambda_function.zip ($(du -sh api/lambda/lambda_function.zip | cut -f1))"
+          ls -lh api/lambda/lambda_function.zip
 
       - uses: actions/upload-artifact@v4
         with:
@@ -50,13 +42,9 @@ jobs:
           path: api/lambda/lambda_function.zip
           retention-days: 1
 
-  # ══════════════════════════════════════════════════════════════════════════
-  # STEP 2 — Shubham's API terraform
-  # Creates: RDS, S3, API Gateway, Lambda
-  # All values from GitHub Secrets — zero hardcoding
-  # ══════════════════════════════════════════════════════════════════════════
+  # ── Step 2: API terraform ──────────────────────────────────────────────────
   api-terraform:
-    name: "2 — API layer (RDS + S3 + API Gateway + Lambda)"
+    name: "2 — API layer"
     runs-on: ubuntu-latest
     needs: build-lambda
     defaults:
@@ -84,26 +72,26 @@ jobs:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
 
-      - name: Download lambda zip
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           name: lambda-zip
           path: api/lambda/
 
-      - name: Write api/terraform/terraform.tfvars
+      - name: Write terraform.tfvars
         run: |
           cat > terraform.tfvars << EOF
-          aws_region       = "us-east-1"
-          account_id       = "${{ secrets.AWS_ACCOUNT_ID }}"
-          vpc_id           = "${{ secrets.VPC_ID }}"
-          private_subnet_a = "${{ secrets.PRIVATE_SUBNET_A }}"
-          private_subnet_b = "${{ secrets.PRIVATE_SUBNET_B }}"
-          public_subnet    = "${{ secrets.PUBLIC_SUBNET }}"
-          lambda_role_arn  = "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/LabRole"
-          sqs_queue_url    = "${{ secrets.SQS_QUEUE_URL }}"
-          sqs_queue_arn    = "${{ secrets.SQS_QUEUE_ARN }}"
+          aws_region        = "us-east-1"
+          account_id        = "${{ secrets.AWS_ACCOUNT_ID }}"
+          vpc_id            = "${{ secrets.VPC_ID }}"
+          private_subnet_a  = "${{ secrets.PRIVATE_SUBNET_A }}"
+          private_subnet_b  = "${{ secrets.PRIVATE_SUBNET_B }}"
+          public_subnet     = "${{ secrets.PUBLIC_SUBNET }}"
+          lambda_role_arn   = "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/LabRole"
+          sqs_queue_url     = "${{ secrets.SQS_QUEUE_URL }}"
+          sqs_queue_arn     = "${{ secrets.SQS_QUEUE_ARN }}"
           state_machine_arn = "${{ secrets.STATE_MACHINE_ARN }}"
-          db_password      = "${{ secrets.DB_PASSWORD }}"
+          db_password       = "${{ secrets.DB_PASSWORD }}"
+          s3_bucket_name    = "cev-reports-${{ secrets.AWS_ACCOUNT_ID }}"
           EOF
 
       - run: terraform init
@@ -129,18 +117,14 @@ jobs:
       - run: terraform output
         if: github.event.inputs.destroy != 'destroy'
 
-  # ══════════════════════════════════════════════════════════════════════════
-  # STEP 3a — Wait for RDS, apply schema
-  # ══════════════════════════════════════════════════════════════════════════
+  # ── Step 3a: Apply schema ──────────────────────────────────────────────────
   apply-schema:
-    name: "3a — Apply database schema"
+    name: "3a — Apply DB schema"
     runs-on: ubuntu-latest
     needs: api-terraform
     if: github.event.inputs.destroy != 'destroy'
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -148,15 +132,14 @@ jobs:
           aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region:            ${{ env.AWS_REGION }}
 
-      - name: Wait for RDS to be available
+      - name: Wait for RDS
         run: |
           echo "Waiting for RDS (up to 15 min on first creation)..."
           aws rds wait db-instance-available \
-            --db-instance-identifier cev-postgres \
-            --region ${{ env.AWS_REGION }}
+            --db-instance-identifier cev-postgres --region ${{ env.AWS_REGION }}
           echo "RDS ready"
 
-      - name: Apply schema.sql via status_updater Lambda
+      - name: Apply schema
         run: |
           PAYLOAD=$(python3 -c "
           import json
@@ -171,17 +154,12 @@ jobs:
             /tmp/schema_out.json
           cat /tmp/schema_out.json
 
-  # ══════════════════════════════════════════════════════════════════════════
-  # STEP 3b — Store DB_PASSWORD in SSM (runs in parallel with 3a)
-  # Ishit's orchestrator Lambda reads from /cev/db_password at runtime
-  # so the password never travels through environment variables
-  # ══════════════════════════════════════════════════════════════════════════
+  # ── Step 3b: Store password in SSM ────────────────────────────────────────
   store-ssm:
     name: "3b — Store DB password in SSM"
     runs-on: ubuntu-latest
     needs: api-terraform
     if: github.event.inputs.destroy != 'destroy'
-
     steps:
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -190,23 +168,18 @@ jobs:
           aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region:            ${{ env.AWS_REGION }}
 
-      - name: Write DB_PASSWORD to SSM Parameter Store
+      - name: Put DB_PASSWORD in SSM
         run: |
           aws ssm put-parameter \
             --name "/cev/db_password" \
             --value "${{ secrets.DB_PASSWORD }}" \
             --type "SecureString" \
-            --overwrite \
-            --region ${{ env.AWS_REGION }}
-          echo "Stored /cev/db_password as SecureString"
+            --overwrite --region ${{ env.AWS_REGION }}
+          echo "Stored /cev/db_password"
 
-  # ══════════════════════════════════════════════════════════════════════════
-  # STEP 4 — Ankita's compute terraform
-  # rds_endpoint flows in from Step 2 outputs — no manual copy
-  # s3_bucket_name flows in from Step 2 outputs — no manual copy
-  # ══════════════════════════════════════════════════════════════════════════
+  # ── Step 4: Compute terraform ──────────────────────────────────────────────
   compute-terraform:
-    name: "4 — Compute layer (ECR + ECS + task definitions)"
+    name: "4 — Compute layer"
     runs-on: ubuntu-latest
     needs: [api-terraform, apply-schema]
     if: github.event.inputs.destroy != 'destroy'
@@ -222,7 +195,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -235,7 +207,7 @@ jobs:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
 
-      - name: Write compute/terraform/terraform.tfvars
+      - name: Write terraform.tfvars
         run: |
           cat > terraform.tfvars << EOF
           aws_region                = "us-east-1"
@@ -266,19 +238,14 @@ jobs:
 
       - run: terraform output
 
-  # ══════════════════════════════════════════════════════════════════════════
-  # STEP 5 — Build and push Docker images
-  # ECR repos exist now (Step 4 created them)
-  # ══════════════════════════════════════════════════════════════════════════
+  # ── Step 5: Build and push images ─────────────────────────────────────────
   build-and-push:
-    name: "5 — Build and push scanner images to ECR"
+    name: "5 — Build and push scanner images"
     runs-on: ubuntu-latest
     needs: compute-terraform
     if: github.event.inputs.destroy != 'destroy'
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -288,59 +255,46 @@ jobs:
 
       - uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build and push SAST image
+      - name: Build and push SAST
         run: |
           IMAGE=${{ needs.compute-terraform.outputs.sast_ecr_url }}
           docker build -t $IMAGE:latest ./compute/sast-scanner/
           docker push $IMAGE:latest
-          echo "Pushed: $IMAGE:latest"
 
-      - name: Build and push Pentest image
+      - name: Build and push Pentest
         run: |
           IMAGE=${{ needs.compute-terraform.outputs.pentest_ecr_url }}
           docker build -t $IMAGE:latest ./compute/pentest-scanner/
           docker push $IMAGE:latest
-          echo "Pushed: $IMAGE:latest"
 
-      - name: Verify both images in ECR
+      - name: Verify images
         run: |
           for repo in \
             compliance-vault-compute-sast-scanner \
             compliance-vault-compute-pentest-scanner; do
             echo "=== $repo ==="
             aws ecr describe-images \
-              --repository-name $repo \
-              --image-ids imageTag=latest \
-              --query "imageDetails[0].{Tag:imageTags[0],Pushed:imagePushedAt,Bytes:imageSizeInBytes}" \
+              --repository-name $repo --image-ids imageTag=latest \
+              --query "imageDetails[0].{Tag:imageTags[0],Pushed:imagePushedAt}" \
               --output table
           done
 
-  # ══════════════════════════════════════════════════════════════════════════
-  # STEP 6 — Final summary
-  # ══════════════════════════════════════════════════════════════════════════
+  # ── Step 6: Summary ────────────────────────────────────────────────────────
   summary:
-    name: "6 — Deployment summary"
+    name: "6 — Done"
     runs-on: ubuntu-latest
     needs: [api-terraform, compute-terraform, build-and-push, store-ssm]
     if: github.event.inputs.destroy != 'destroy'
-
     steps:
-      - name: Print full summary
+      - name: Print summary
         run: |
-          echo ""
-          echo "╔══════════════════════════════════════════════════════════════════╗"
-          echo "║       COMPLIANCE EVIDENCE VAULT — FULLY DEPLOYED                ║"
-          echo "╠══════════════════════════════════════════════════════════════════╣"
-          echo "║  API URL:       ${{ needs.api-terraform.outputs.api_url }}"
-          echo "║  RDS endpoint:  ${{ needs.api-terraform.outputs.rds_endpoint }}"
-          echo "║  S3 bucket:     ${{ needs.api-terraform.outputs.s3_bucket_name }}"
-          echo "║  ECS cluster:   ${{ needs.compute-terraform.outputs.ecs_cluster_arn }}"
-          echo "║  SAST task:     ${{ needs.compute-terraform.outputs.sast_task_arn }}"
-          echo "║  Pentest task:  ${{ needs.compute-terraform.outputs.pentest_task_arn }}"
-          echo "║  DB password:   in SSM at /cev/db_password (SecureString)"
-          echo "╠══════════════════════════════════════════════════════════════════╣"
-          echo "║  ACTION REQUIRED — send these to Ishit:                         ║"
-          echo "║  SAST task def ARN:    ${{ needs.compute-terraform.outputs.sast_task_arn }}"
-          echo "║  Pentest task def ARN: ${{ needs.compute-terraform.outputs.pentest_task_arn }}"
-          echo "║  ECS cluster ARN:      ${{ needs.compute-terraform.outputs.ecs_cluster_arn }}"
-          echo "╚══════════════════════════════════════════════════════════════════╝"
+          echo "╔══════════════════════════════════════════════════════╗"
+          echo "║   COMPLIANCE EVIDENCE VAULT — FULLY DEPLOYED        ║"
+          echo "╠══════════════════════════════════════════════════════╣"
+          echo "║  API URL:      ${{ needs.api-terraform.outputs.api_url }}"
+          echo "║  RDS:          ${{ needs.api-terraform.outputs.rds_endpoint }}"
+          echo "║  S3 bucket:    ${{ needs.api-terraform.outputs.s3_bucket_name }}"
+          echo "║  ECS cluster:  ${{ needs.compute-terraform.outputs.ecs_cluster_arn }}"
+          echo "║  SAST task:    ${{ needs.compute-terraform.outputs.sast_task_arn }}"
+          echo "║  Pentest task: ${{ needs.compute-terraform.outputs.pentest_task_arn }}"
+          echo "╚══════════════════════════════════════════════════════╝"

@@ -1,9 +1,19 @@
+# api/terraform/outputs.tf
+# References locals from rds.tf and lambda.tf so outputs work
+# whether resources were just created or already existed
+
 output "rds_endpoint" {
-  value = aws_db_instance.cev_postgres.endpoint
+  value = local.rds_address
 }
 
 output "rds_arn" {
-  value = aws_db_instance.cev_postgres.arn
+  value = can(data.aws_db_instance.existing.db_instance_arn) ? (
+    data.aws_db_instance.existing.db_instance_arn
+  ) : aws_db_instance.cev_postgres[0].arn
+}
+
+output "rds_sg_id" {
+  value = local.rds_sg_id
 }
 
 output "s3_bucket_name" {
@@ -12,10 +22,6 @@ output "s3_bucket_name" {
 
 output "s3_bucket_arn" {
   value = aws_s3_bucket.cev_reports.arn
-}
-
-output "rds_sg_id" {
-  value = aws_security_group.rds_sg.id
 }
 
 output "api_gateway_url" {
