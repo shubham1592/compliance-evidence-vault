@@ -219,10 +219,6 @@
       .log.err {
         color: #f85149;
       }
-      /* Target URL field — shown only for PENTEST */
-      #target-url-group {
-        display: none;
-      }
     </style>
   </head>
   <body>
@@ -242,22 +238,22 @@
       <div class="form-row">
         <div class="form-group">
           <label>Scan Type</label>
-          <select id="scan-type" onchange="toggleScanFields()">
+          <select id="scan-type">
             <option value="SAST">SAST</option>
             <option value="PENTEST">PENTEST</option>
           </select>
         </div>
-        <div class="form-group" id="file-group">
-          <label>Source ZIP</label>
+        <div class="form-group">
+          <label>Source ZIP (SAST) / Target URL (PENTEST)</label>
           <input type="file" id="scan-file" accept=".zip" />
         </div>
-        <div class="form-group" id="target-url-group">
+        <div class="form-group" id="target-url-group" style="display: none">
           <label>Target URL</label>
           <input
             type="text"
             id="target-url"
             placeholder="https://example.com"
-            style="width: 300px"
+            style="width: 280px"
           />
         </div>
         <button id="btn-submit" onclick="submitJob()">Submit Job</button>
@@ -315,11 +311,11 @@
         el.className = "log " + type;
       }
 
-      function toggleScanFields() {
-        const isPentest = $("scan-type").value === "PENTEST";
-        $("file-group").style.display = isPentest ? "none" : "";
+      $("scan-type").addEventListener("change", function () {
+        const isPentest = this.value === "PENTEST";
         $("target-url-group").style.display = isPentest ? "" : "none";
-      }
+        $("scan-file").parentElement.style.display = isPentest ? "none" : "";
+      });
 
       async function submitJob() {
         const { url, apikey } = cfg();
@@ -332,15 +328,6 @@
         const fileInput = $("scan-file");
         const targetUrl = $("target-url").value.trim();
 
-        if (scanType === "SAST" && fileInput.files.length === 0) {
-          log("submit-log", "Please select a ZIP file for SAST.", "err");
-          return;
-        }
-        if (scanType === "PENTEST" && !targetUrl) {
-          log("submit-log", "Please enter a target URL for PENTEST.", "err");
-          return;
-        }
-
         $("btn-submit").disabled = true;
         log("submit-log", "Creating job...");
 
@@ -348,7 +335,6 @@
           const body = { scan_type: scanType };
           if (scanType === "PENTEST") body.target_url = targetUrl;
 
-          // Step 1 — create job record
           const res = await fetch(`${url}/jobs`, {
             method: "POST",
             headers: headers(),
@@ -357,39 +343,22 @@
           const data = await res.json();
           if (!res.ok) throw new Error(data.error || res.statusText);
 
-          // PENTEST — no upload needed, already queued
-          if (scanType === "PENTEST") {
-            log("submit-log", `Pentest job ${data.job_id} submitted.`, "ok");
-            loadJobs();
-            return;
+          log("submit-log", `Job created: ${data.job_id} — uploading file...`);
+
+          if (scanType === "SAST" && fileInput.files.length > 0) {
+            const uploadRes = await fetch(data.upload_url, {
+              method: "PUT",
+              body: fileInput.files[0],
+            });
+            if (!uploadRes.ok)
+              throw new Error("S3 upload failed: " + uploadRes.statusText);
           }
 
-          // SAST — Step 2: upload zip to S3 pre-signed URL
           log(
             "submit-log",
-            `Job created: ${data.job_id} — uploading ZIP to S3...`,
+            `Job ${data.job_id} submitted. It will run in ~30 seconds.`,
+            "ok",
           );
-
-          const uploadRes = await fetch(data.upload_url, {
-            method: "PUT",
-            body: fileInput.files[0],
-            // No Content-Type header — must match what was signed
-          });
-          if (!uploadRes.ok)
-            throw new Error("S3 upload failed: " + uploadRes.statusText);
-
-          log("submit-log", "Upload complete — confirming with API...");
-
-          // Step 3 — confirm upload so Lambda verifies file and enqueues to SQS
-          const confirmRes = await fetch(`${url}/jobs/${data.job_id}/confirm`, {
-            method: "POST",
-            headers: headers(),
-          });
-          const confirmData = await confirmRes.json();
-          if (!confirmRes.ok)
-            throw new Error(confirmData.error || confirmRes.statusText);
-
-          log("submit-log", `Job ${data.job_id} queued successfully.`, "ok");
           loadJobs();
         } catch (e) {
           log("submit-log", "Error: " + e.message, "err");
@@ -418,22 +387,22 @@
             '<p class="empty-state">No jobs yet.</p>';
           return;
         }
+        const rows = jobs
+          .map(
+            (j) => `
+      <tr>
+        <td class="clickable" onclick="loadJobDetail('${j.job_id}')">${j.job_id.slice(0, 8)}…</td>
+        <td>${j.scan_type}</td>
+        <td><span class="status-badge status-${j.status}">${j.status}</span></td>
+        <td>${new Date(j.created_at).toLocaleString()}</td>
+        <td>${new Date(j.updated_at).toLocaleString()}</td>
+      </tr>`,
+          )
+          .join("");
         $("jobs-table-wrap").innerHTML = `
       <table>
         <thead><tr><th>Job ID</th><th>Type</th><th>Status</th><th>Created</th><th>Updated</th></tr></thead>
-        <tbody>${jobs
-          .map(
-            (j) => `
-          <tr>
-            <td class="clickable" onclick="loadJobDetail('${j.job_id}')">${j.job_id.slice(0, 8)}…</td>
-            <td>${j.scan_type}</td>
-            <td><span class="status-badge status-${j.status}">${j.status}</span></td>
-            <td>${new Date(j.created_at).toLocaleString()}</td>
-            <td>${new Date(j.updated_at).toLocaleString()}</td>
-          </tr>`,
-          )
-          .join("")}
-        </tbody>
+        <tbody>${rows}</tbody>
       </table>`;
       }
 
@@ -465,7 +434,7 @@
           : "";
         if (!job.findings || !job.findings.length) {
           $("findings-wrap").innerHTML =
-            '<p class="empty-state">No findings.</p>';
+            '<p class="empty-state">No findings yet.</p>';
           return;
         }
         $("findings-wrap").innerHTML = `
