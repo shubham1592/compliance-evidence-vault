@@ -1,4 +1,7 @@
-# Package the Lambda code into a zip file
+# api/terraform/lambda.tf
+# DB_PASSWORD now reads from var.db_password (GitHub Secret via tfvars)
+# instead of being hardcoded as "CEVpassword123!"
+
 locals {
   lambda_zip = "${path.module}/../lambda/lambda_function.zip"
 }
@@ -23,7 +26,7 @@ resource "aws_lambda_function" "cev_api" {
       DB_HOST     = aws_db_instance.cev_postgres.address
       DB_NAME     = "compliancevault"
       DB_USER     = "cevadmin"
-      DB_PASSWORD = "CEVpassword123!"
+      DB_PASSWORD = var.db_password
       S3_BUCKET   = aws_s3_bucket.cev_reports.bucket
       SQS_URL     = var.sqs_queue_url
     }
@@ -35,7 +38,6 @@ resource "aws_lambda_function" "cev_api" {
   }
 }
 
-# Security group for Lambda
 resource "aws_security_group" "lambda_sg" {
   name        = "cev-lambda-sg"
   description = "Allow Lambda to reach RDS and AWS services"
@@ -54,7 +56,6 @@ resource "aws_security_group" "lambda_sg" {
   }
 }
 
-# Status updater Lambda — called by Ankita's scanners to mark jobs COMPLETED/FAILED
 resource "aws_lambda_function" "cev_status_updater" {
   function_name    = "cev-status-updater"
   role             = var.lambda_role_arn
@@ -75,7 +76,7 @@ resource "aws_lambda_function" "cev_status_updater" {
       DB_HOST     = aws_db_instance.cev_postgres.address
       DB_NAME     = "compliancevault"
       DB_USER     = "cevadmin"
-      DB_PASSWORD = "CEVpassword123!"
+      DB_PASSWORD = var.db_password
     }
   }
 

@@ -1,12 +1,5 @@
-# ===========================================================================
-# Ankita's Terraform — compute/terraform/main.tf
-# Milestone 2 integration — runs in Ishit's account (126573932591)
-#
-# What changed from Milestone 1:
-#   + db_host, db_name, db_user baked into task env (password is runtime only)
-#   + aws_s3_bucket resource added so lifecycle doesn't fail with NoSuchBucket
-#   + S3 lifecycle depends_on bucket resource
-# ===========================================================================
+# compute/terraform/main.tf
+# account_id removed from hardcoded local — reads from var.account_id
 
 terraform {
   required_providers {
@@ -21,25 +14,22 @@ provider "aws" {
   region = var.aws_region
 }
 
-# ---------------------------------------------------------------------------
-# Variables
-# ---------------------------------------------------------------------------
-
 variable "aws_region"                 { default = "us-east-1" }
 variable "project"                    { default = "compliance-vault" }
-variable "vpc_id"                     {}
+variable "account_id"                 { description = "AWS account ID" }
+variable "vpc_id"                     { description = "VPC ID" }
 variable "private_subnet_ids"         { type = list(string) }
-variable "rds_security_group_id"      {}
-variable "fargate_security_group_id"  {}
-variable "report_bucket_name"         {}
-variable "db_host"                    {}
+variable "rds_security_group_id"      { description = "RDS security group ID" }
+variable "fargate_security_group_id"  { description = "Fargate security group ID" }
+variable "report_bucket_name"         { description = "S3 bucket for reports" }
+variable "db_host"                    { description = "RDS endpoint" }
 variable "db_name"                    { default = "compliancevault" }
 variable "db_user"                    { default = "cevadmin" }
 variable "ecr_image_tag"              { default = "latest" }
 
 locals {
   prefix   = "${var.project}-compute"
-  lab_role = "arn:aws:iam::126573932591:role/LabRole"
+  lab_role = "arn:aws:iam::${var.account_id}:role/LabRole"
 }
 
 # ---------------------------------------------------------------------------
@@ -66,9 +56,10 @@ resource "aws_ecr_lifecycle_policy" "sast" {
   repository = aws_ecr_repository.sast.name
   policy = jsonencode({
     rules = [{
-      rulePriority = 1, description = "Keep last 10 images"
-      selection = { tagStatus = "any", countType = "imageCountMoreThan", countNumber = 10 }
-      action = { type = "expire" }
+      rulePriority = 1
+      description  = "Keep last 10 images"
+      selection    = { tagStatus = "any", countType = "imageCountMoreThan", countNumber = 10 }
+      action       = { type = "expire" }
     }]
   })
 }
@@ -115,9 +106,7 @@ resource "aws_ecs_cluster_capacity_providers" "scanners" {
 
 # ---------------------------------------------------------------------------
 # ECS task definitions
-# DB_HOST / DB_NAME / DB_USER baked in.
-# DB_PASSWORD, JOB_ID, S3_KEY / TARGET_URL injected at runtime by
-# Ishit's Step Functions container overrides — never stored here.
+# DB_PASSWORD, JOB_ID, S3_KEY/TARGET_URL injected at runtime by Step Functions
 # ---------------------------------------------------------------------------
 
 resource "aws_ecs_task_definition" "sast" {
@@ -209,21 +198,23 @@ resource "aws_s3_bucket_lifecycle_configuration" "reports" {
   depends_on = [aws_s3_bucket.reports]
 
   rule {
-    id = "reports-archive", status = "Enabled"
+    id     = "reports-archive"
+    status = "Enabled"
     filter { prefix = "reports/" }
-    transition { days = 90, storage_class = "GLACIER" }
-    expiration { days = 2555 }
+    transition  { days = 90,   storage_class = "GLACIER" }
+    expiration  { days = 2555 }
   }
 
   rule {
-    id = "uploads-cleanup", status = "Enabled"
+    id     = "uploads-cleanup"
+    status = "Enabled"
     filter { prefix = "uploads/" }
     expiration { days = 7 }
   }
 }
 
 # ---------------------------------------------------------------------------
-# Outputs — copy these and send to Ishit after terraform apply
+# Outputs
 # ---------------------------------------------------------------------------
 
 output "sast_task_definition_arn"    { value = aws_ecs_task_definition.sast.arn }

@@ -1,47 +1,49 @@
+# api/terraform/variables.tf
+# All hardcoded defaults removed — values come from GitHub Secrets
+# written into terraform.tfvars by the workflow at deploy time.
+
 variable "aws_region" {
-  default = "us-east-1"
+  description = "AWS region"
+  default     = "us-east-1"
 }
 
 variable "account_id" {
-  default = "469174453369"
+  description = "AWS account ID"
 }
 
 variable "vpc_id" {
-  default = "vpc-038f92f05c8d008ab"
+  description = "VPC ID from Ishit's infra"
 }
 
 variable "private_subnet_a" {
-  default = "subnet-0f1d47085356b041a"
+  description = "Private subnet A ID"
 }
 
 variable "private_subnet_b" {
-  default = "subnet-062fd831d2a0152d0"
+  description = "Private subnet B ID"
 }
 
 variable "public_subnet" {
-  default = "subnet-0fa918aad9de85318"
-}
-
-variable "lambda_sg" {
-  default = "sg-07a0ba91c2ffc462f"
-}
-
-variable "rds_sg" {
-  default = "sg-0291afa76465a499b"
+  description = "Public subnet ID"
 }
 
 variable "lambda_role_arn" {
-  default = "arn:aws:iam::469174453369:role/LabRole"
+  description = "LabRole ARN for Lambda execution"
 }
 
 variable "sqs_queue_url" {
-  default = "https://sqs.us-east-1.amazonaws.com/126573932591/cev-scan-queue"
+  description = "SQS queue URL for job messages"
 }
 
 variable "sqs_queue_arn" {
-  default = "arn:aws:sqs:us-east-1:126573932591:cev-scan-queue"
+  description = "SQS queue ARN"
 }
 
 variable "state_machine_arn" {
-  default = "arn:aws:states:us-east-1:126573932591:stateMachine:cev-scan-orchestrator"
+  description = "Step Functions state machine ARN"
+}
+
+variable "db_password" {
+  description = "RDS master password — injected from GitHub Secret, never hardcoded"
+  sensitive   = true
 }

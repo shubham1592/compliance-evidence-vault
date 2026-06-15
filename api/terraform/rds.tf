@@ -1,14 +1,25 @@
-# Create a security group for RDS in your VPC
+# api/terraform/rds.tf
+# password now reads from var.db_password instead of hardcoded "CEVpassword123!"
+
 resource "aws_security_group" "rds_sg" {
   name        = "cev-rds-sg"
-  description = "Allow PostgreSQL access from Lambda"
+  description = "Allow PostgreSQL access from Lambda and Fargate"
   vpc_id      = var.vpc_id
+
+  ingress {
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
+    security_groups = [aws_security_group.lambda_sg.id]
+    description     = "Lambda to RDS"
+  }
 
   ingress {
     from_port   = 5432
     to_port     = 5432
     protocol    = "tcp"
-    cidr_blocks = ["172.31.0.0/16"]
+    cidr_blocks = ["10.0.0.0/8"]
+    description = "Fargate tasks to RDS (private VPC range)"
   }
 
   egress {
@@ -24,7 +35,6 @@ resource "aws_security_group" "rds_sg" {
   }
 }
 
-# Subnet group for RDS
 resource "aws_db_subnet_group" "cev" {
   name       = "cev-rds-subnet-group"
   subnet_ids = [var.private_subnet_a, var.private_subnet_b]
@@ -44,7 +54,7 @@ resource "aws_db_instance" "cev_postgres" {
 
   db_name  = "compliancevault"
   username = "cevadmin"
-  password = "CEVpassword123!"
+  password = var.db_password
 
   db_subnet_group_name   = aws_db_subnet_group.cev.name
   vpc_security_group_ids = [aws_security_group.rds_sg.id]
