@@ -77,7 +77,7 @@ resource "aws_db_subnet_group" "cev" {
 resource "aws_db_instance" "cev_postgres" {
   identifier        = "cev-postgres"
   engine            = "postgres"
-  engine_version    = "16.8"
+  engine_version    = "16.14"
   instance_class    = "db.t3.micro"
   allocated_storage = 20
 
