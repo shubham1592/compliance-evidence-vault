@@ -2,6 +2,11 @@
 # account_id removed from hardcoded local — reads from var.account_id
 
 terraform {
+  backend "s3" {
+    bucket = "cev-tf-state-126573932591"
+    key    = "compute/terraform.tfstate"
+    region = "us-east-1"
+  }
   required_providers {
     aws = {
       source  = "hashicorp/aws"
@@ -91,7 +96,10 @@ resource "aws_cloudwatch_log_group" "pentest" {
 
 resource "aws_ecs_cluster" "scanners" {
   name = "${local.prefix}-cluster"
-  setting { name = "containerInsights", value = "enabled" }
+  setting { 
+    name = "containerInsights"
+    value = "enabled" 
+  }
   tags = { Component = "ankita-compute", Owner = "ankita" }
 }
 
@@ -201,7 +209,10 @@ resource "aws_s3_bucket_lifecycle_configuration" "reports" {
     id     = "reports-archive"
     status = "Enabled"
     filter { prefix = "reports/" }
-    transition  { days = 90,   storage_class = "GLACIER" }
+    transition  { 
+      days = 90
+      storage_class = "GLACIER" 
+    }
     expiration  { days = 2555 }
   }
 
