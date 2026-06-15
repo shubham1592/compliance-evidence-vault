@@ -1,5 +1,3 @@
-# api/terraform/outputs.tf
-
 output "rds_endpoint" {
   value = local.rds_address
 }
@@ -9,7 +7,7 @@ output "rds_arn" {
 }
 
 output "rds_sg_id" {
-  value = local.rds_sg_id
+  value = var.rds_sg_id
 }
 
 output "s3_bucket_name" {
