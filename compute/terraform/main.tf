@@ -2,11 +2,6 @@
 # account_id removed from hardcoded local — reads from var.account_id
 
 terraform {
-  backend "s3" {
-    bucket = "cev-tf-state-126573932591"
-    key    = "compute/terraform.tfstate"
-    region = "us-east-1"
-  }
   required_providers {
     aws = {
       source  = "hashicorp/aws"
