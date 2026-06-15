@@ -236,7 +236,11 @@ jobs:
           EOF
 
       - name: Debug tfvars
-        run: cat terraform.tfvars | grep -v password | grep -v db_password
+        run: |
+          echo "=== tfvars contents (secrets masked) ==="
+          grep -v "password\|db_pass" terraform.tfvars
+          echo "=== checking lambda_sg_id and rds_sg_id ==="
+          grep "lambda_sg_id\|rds_sg_id" terraform.tfvars
 
       - run: terraform init
       - run: terraform apply -auto-approve
