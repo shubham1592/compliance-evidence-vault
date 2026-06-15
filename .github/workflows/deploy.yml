@@ -114,6 +114,43 @@ jobs:
 
       - run: terraform init
 
+      - name: Import existing resources into state
+        run: |
+          # Import RDS subnet group if it exists
+          aws rds describe-db-subnet-groups \
+            --db-subnet-group-name cev-rds-subnet-group \
+            --region us-east-1 > /dev/null 2>&1 && \
+            terraform import aws_db_subnet_group.cev cev-rds-subnet-group || \
+            echo "RDS subnet group not found, will create"
+
+          # Import S3 bucket if it exists
+          aws s3api head-bucket \
+            --bucket cev-reports-${{ secrets.AWS_ACCOUNT_ID }} 2>/dev/null && \
+            terraform import aws_s3_bucket.cev_reports \
+              cev-reports-${{ secrets.AWS_ACCOUNT_ID }} || \
+            echo "S3 bucket not found, will create"
+
+          # Import RDS instance if it exists
+          aws rds describe-db-instances \
+            --db-instance-identifier cev-postgres \
+            --region us-east-1 > /dev/null 2>&1 && \
+            terraform import aws_db_instance.cev_postgres cev-postgres || \
+            echo "RDS instance not found, will create"
+
+          # Import Lambda functions if they exist
+          aws lambda get-function \
+            --function-name cev-api-handler \
+            --region us-east-1 > /dev/null 2>&1 && \
+            terraform import aws_lambda_function.cev_api cev-api-handler || \
+            echo "Lambda cev-api-handler not found, will create"
+
+          aws lambda get-function \
+            --function-name cev-status-updater \
+            --region us-east-1 > /dev/null 2>&1 && \
+            terraform import aws_lambda_function.cev_status_updater \
+              cev-status-updater || \
+            echo "Lambda cev-status-updater not found, will create"
+
       - name: Terraform apply or destroy
         run: |
           if [ "${{ github.event.inputs.destroy }}" = "destroy" ]; then
@@ -252,6 +289,42 @@ jobs:
           grep "lambda_sg_id\|rds_sg_id" terraform.tfvars
 
       - run: terraform init
+
+      - name: Import existing compute resources
+        run: |
+          # Import ECR repos
+          aws ecr describe-repositories \
+            --repository-names compliance-vault-compute-sast-scanner \
+            --region us-east-1 > /dev/null 2>&1 && \
+            terraform import aws_ecr_repository.sast \
+              compliance-vault-compute-sast-scanner || \
+            echo "SAST ECR not found, will create"
+
+          aws ecr describe-repositories \
+            --repository-names compliance-vault-compute-pentest-scanner \
+            --region us-east-1 > /dev/null 2>&1 && \
+            terraform import aws_ecr_repository.pentest \
+              compliance-vault-compute-pentest-scanner || \
+            echo "Pentest ECR not found, will create"
+
+          # Import ECS cluster
+          CLUSTER_ARN=$(aws ecs describe-clusters \
+            --clusters compliance-vault-compute-cluster \
+            --query "clusters[0].clusterArn" \
+            --output text 2>/dev/null)
+          [ "$CLUSTER_ARN" != "None" ] && [ -n "$CLUSTER_ARN" ] && \
+            terraform import aws_ecs_cluster.scanners \
+              $CLUSTER_ARN || \
+            echo "ECS cluster not found, will create"
+
+          # Import S3 lifecycle config
+          aws s3api head-bucket \
+            --bucket cev-reports-${{ secrets.AWS_ACCOUNT_ID }} 2>/dev/null && \
+            terraform import \
+              aws_s3_bucket_lifecycle_configuration.reports \
+              cev-reports-${{ secrets.AWS_ACCOUNT_ID }} || \
+            echo "S3 lifecycle not found, will create"
+
       - run: terraform apply -auto-approve
 
       - name: Capture outputs
