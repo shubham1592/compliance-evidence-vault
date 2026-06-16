@@ -346,12 +346,17 @@
           log("submit-log", `Job created: ${data.job_id} — uploading file...`);
 
           if (scanType === "SAST" && fileInput.files.length > 0) {
-            const uploadRes = await fetch(data.upload_url, {
-              method: "PUT",
+            const uploadRes = await fetch(`${url}/jobs/${data.job_id}/upload`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/zip",
+                "x-api-key": apikey,
+              },
               body: fileInput.files[0],
             });
+            const uploadData = await uploadRes.json();
             if (!uploadRes.ok)
-              throw new Error("S3 upload failed: " + uploadRes.statusText);
+              throw new Error(uploadData.error || "Upload failed");
           }
 
           log(
