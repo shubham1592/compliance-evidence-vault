@@ -1,6 +1,6 @@
 # Compliance Evidence Vault
 
-> A combined SAST and API Penetration Testing platform with automated evidence storage, audit trails, and long-term report archival — built for CS6620 Cloud Computing (Spring 2026) at Northeastern University.
+> A tamper-proof, automated security scanning platform with SHA-256 hashed evidence storage, long-term Glacier archival, and WORM audit trails — built for CS6620 Fundamentals of Cloud Computing (Spring 2026) at Northeastern University.
 
 ---
 
@@ -12,36 +12,40 @@
 - [Project Structure](#project-structure)
 - [Data Flow](#data-flow)
 - [Prerequisites](#prerequisites)
-- [Setup and Deployment](#setup-and-deployment)
+- [Deployment](#deployment)
+- [GitHub Secrets](#github-secrets)
 - [Environment Variables](#environment-variables)
 - [Database Schema](#database-schema)
 - [S3 Bucket Structure](#s3-bucket-structure)
 - [Retention Policy](#retention-policy)
 - [API Reference](#api-reference)
+- [Local Testing](#local-testing)
 - [Contributors](#contributors)
 
 ---
 
 ## Overview
 
-The Compliance Evidence Vault is a cloud-native security platform that runs SAST (Static Application Security Testing) and API Penetration Testing scans on demand and stores the results as tamper-evident compliance evidence. It is designed for regulated organizations that need demonstrable records of security testing.
+The Compliance Evidence Vault is a cloud-native security platform that runs SAST (Static Application Security Testing) and API Penetration Testing scans on demand, and stores the results as tamper-evident compliance evidence. It is designed for regulated organizations that need demonstrable, auditable records of security testing for SOC2, HIPAA, and PCI-DSS certification.
 
 **What it does:**
 
-- Accepts scan requests through a web dashboard
-- Dispatches scans asynchronously via AWS Lambda to ECS Fargate containers
-- Stores full JSON scan reports in S3 with versioning and encryption
-- Records scan metadata in RDS PostgreSQL for fast dashboard queries
-- Archives reports automatically after 30 days (simulating Glacier for long-term retention)
-- Logs every API action via CloudTrail for a tamper-evident audit trail
-- Enforces least-privilege access through IAM roles on every service boundary
+- Accepts scan requests through a browser dashboard
+- Queues jobs asynchronously via SQS and dispatches them through AWS Step Functions
+- Runs SAST and Pentest scanners in isolated ECS Fargate containers in a private VPC subnet
+- SHA-256 hashes every report immediately on scan completion
+- Stores full JSON scan reports in S3 with lifecycle-based Glacier archival
+- Records scan metadata and findings in RDS PostgreSQL for fast dashboard queries
+- Logs every AWS API call via CloudTrail in a WORM-locked S3 bucket
+- Enforces least-privilege access with LabRole IAM on every service boundary
+- Monitors the pipeline with 4 CloudWatch alarms routed to SNS email alerts
 
-**Tools used:**
+**Scanners:**
 
-| Tool | Type | What it scans |
-|------|------|---------------|
-| SAST Scanner | Static | JavaScript source code — detects hardcoded secrets, SQLi, XSS, path traversal, weak crypto, and 6 more |
-| API Pentest | Dynamic | Live HTTP APIs — tests for missing auth, SQLi, NoSQLi, rate limiting, security headers, sensitive data exposure |
+| Scanner | Type | What it detects |
+|---------|------|-----------------|
+| SAST | Static (zip upload) | 11 vulnerability patterns: SQL injection, hardcoded secrets, command injection, XSS, insecure deserialization, path traversal, weak crypto (MD5/SHA1), insecure random, open redirect, SSRF, debug mode enabled |
+| Pentest | Dynamic (live URL) | 6 probe categories: missing security headers, TLS configuration, sensitive path exposure (/.env, /.git), dangerous HTTP methods (TRACE/PUT/DELETE), cookie flag absence, injection surfaces |
 
 ---
 
@@ -49,50 +53,98 @@ The Compliance Evidence Vault is a cloud-native security platform that runs SAST
 
 ```
 User (Browser)
+     │  HTTPS
+     ▼
+API Gateway ── API key auth + throttling
      │
      ▼
-ECS Fargate — Dashboard (React + Node.js proxy)
+Lambda — cev-api-handler                    ──► RDS PostgreSQL (INSERT job PENDING)
+     │   returns job_id + presigned URL in <1s       compliancevault db
      │
-     ▼
-API Gateway  ─────────────────────────────────────────┐
-     │                                                 │
-     ▼                                                 │
-Lambda — Dispatcher                                    │
-     │  inserts pending row ──────────────────► RDS PostgreSQL
-     │                                          (scan metadata)
-     ├──── ECS RunTask ──► ECS Fargate — SAST Scanner
-     │                          │
-     └──── ECS RunTask ──► ECS Fargate — Pentest Scanner
-                                │
-                    ┌───────────┴───────────┐
-                    ▼                       ▼
-           S3 — evidence-store      RDS PostgreSQL
-           (full JSON reports)      (status = complete)
-                    │
-          lifecycle after 30 days
-                    │
-                    ▼
-           S3 — archive-store
-           (long-term retention)
+     ├──► S3 presigned PUT URL ◄── Browser uploads zip directly
+     │        cev-reports-{account_id}/uploads/{job_id}/source.zip
+     │
+     └──► SQS ── cev-scan-queue (15-min visibility, DLQ after 3 failures)
+                  │
+                  ▼
+           Lambda — cev-orchestrator (SQS event source mapping)
+                  │
+                  ▼
+           Step Functions — cev-scan-orchestrator
+                  │
+                  ├── RouteByType (Choice)
+                  │       │
+                  │       ├── SAST ──► WaitForUpload (30s) ──► RunSASTScanner
+                  │       └── PENTEST ──────────────────────► RunPentestScanner
+                  │
+                  │   [Both scanners: ECS Fargate, private subnet, 3× retry with backoff]
+                  │       │
+                  │       ├── ResultPath: $.ecs_result (preserves $.job_id)
+                  │       │
+                  │       ├── Success ──► MarkJobCompleted (Lambda: cev-status-updater)
+                  │       └── Failure ──► MarkJobFailed   (Lambda: cev-status-updater)
+                  │
+                  ▼
+           ECS Fargate — private subnet, no public IP
+                  │
+           ┌──────┴──────┐
+           ▼             ▼
+    SAST Scanner    Pentest Scanner
+    (Python 3.11)   (Python 3.11)
+           │             │
+           └──────┬──────┘
+                  │
+        ┌─────────┴──────────┐
+        ▼                    ▼
+ S3 — cev-reports        RDS PostgreSQL
+ reports/{type}/{id}/    findings table
+ report.json             (severity, vuln_type, detail)
+        │
+  SHA-256 hash
+  in report body
+        │
+  Lifecycle: Standard ──(90 days)──► Glacier ──(7 years)──► Expire
 
-CloudTrail ── logs all API calls account-wide ──► S3 — cloudtrail-logs
-IAM ── least-privilege roles on every service boundary
+CloudTrail ── WORM COMPLIANCE mode, 7-year retention ──► S3 cloudtrail logs
+CloudWatch ── 4 alarms: SQS depth, Lambda errors, Fargate CPU >85%, DLQ depth >0
+SNS ── routes all alarms to team email
 ```
+
+**Changes from Milestone 1 proposal (based on professor feedback):**
+
+| Feedback item | What we added |
+|---|---|
+| Use IaC for repeatable infrastructure | Full Terraform for all 39 resources across 3 modules |
+| Add async processing with queues | SQS buffer between Lambda and Step Functions |
+| Add retry mechanism for scan failures | Step Functions 3× exponential backoff (30s → 60s → 120s) |
+| Add DLQ for failure capture | SQS Dead-Letter Queue + CloudWatch alarm on DLQ depth |
+| RDS in private subnet | VPC private subnet, RDS SG allows only Lambda and Fargate SGs |
+| Add CloudWatch monitoring | 4 alarms: SQS, Lambda, Fargate CPU, DLQ |
+| Secure VPC design | Public subnet: API Gateway. Private subnet: Lambda, Fargate, RDS |
+| CloudTrail for audit | COMPLIANCE mode Object Lock, 7-year retention |
 
 ---
 
 ## AWS Services
 
-| Service | Role | Justification |
-|---------|------|---------------|
-| **ECS Fargate** | Dashboard + scanner containers | No servers to manage; containers scale to zero when idle; each scan runs in full isolation; satisfies Docker containerization requirement |
-| **API Gateway** | Managed HTTP entry point | Decouples dashboard from Lambda; provides throttling (100 req/s burst), request validation, and a managed endpoint without exposing scanners publicly |
-| **Lambda** | Async scan dispatcher | Stateless; costs nothing when idle; turns synchronous scan requests into async jobs so the dashboard never times out on long scans |
-| **RDS PostgreSQL** | Scan metadata and queries | Fixed schema, relational queries, ACID guarantees; dashboard needs SQL for sorting and filtering by date, severity, and tool type |
-| **S3 (evidence-store)** | Active scan report storage | Cheaper than RDS blobs for large JSON files; presigned URLs let the browser download directly; versioning provides report change history |
-| **S3 (archive-store)** | Long-term report archival | Simulates Glacier (unavailable in Learner Lab); lifecycle rule auto-transitions objects after 30 days; demonstrates retention policy in practice |
-| **CloudTrail** | Immutable API access log | Captures every AWS API call account-wide; log file validation makes logs tamper-evident; directly satisfies the audit trail deliverable |
-| **IAM** | Least-privilege access control | Each service has only the permissions it needs — Lambda can only call ECS RunTask, Fargate can only write to S3 and RDS, dashboard can only read |
+| Service | Role | Why we chose it |
+|---------|------|-----------------|
+| **API Gateway** | HTTPS REST entry point | Decouples browser from Lambda; provides API key auth, throttling, request validation; no EC2 to manage |
+| **Lambda (cev-api-handler)** | Job creation + presigned URL | Returns job_id in <1s; stateless; no idle cost |
+| **Lambda (cev-orchestrator)** | SQS → Step Functions bridge | Reads SQS batch, starts one Step Functions execution per job, returns batchItemFailures for partial retry |
+| **Lambda (cev-status-updater)** | Job status updates | Called by Step Functions on completion or failure; clears error_msg on COMPLETED |
+| **SQS (cev-scan-queue)** | Async job buffer | 15-min visibility timeout; decouples API response from scanner execution; DLQ after 3 failures |
+| **Step Functions** | Scan orchestration | Routes SAST vs Pentest; WaitForUpload state for browser upload timing; 3× retry with exponential backoff; explicit FAILED branch |
+| **ECS Fargate (SAST)** | Static code scanner | One-shot container; zero idle cost; no public IP; private subnet; 512 CPU / 1024 MB |
+| **ECS Fargate (Pentest)** | Dynamic HTTP scanner | One-shot container; zero idle cost; no public IP; private subnet; 256 CPU / 512 MB |
+| **ECR** | Container image registry | Stores SAST and Pentest images with scan_on_push; deployed via GitHub Actions |
+| **RDS PostgreSQL** | Scan metadata + findings | ACID guarantees; jobs and findings tables; private subnet; accessible only from Lambda and Fargate SGs |
+| **S3 (cev-reports-{account})** | Report storage + uploads | Receives SHA-256 hashed JSON reports; lifecycle to Glacier at 90 days; CORS configured for browser uploads |
+| **CloudWatch** | Pipeline monitoring | 4 alarms; log groups for all Lambda and ECS components; 30-day retention |
+| **CloudTrail** | Immutable audit log | Every AWS API call logged; COMPLIANCE mode Object Lock; 7-year retention; log file validation enabled |
+| **SNS** | Alert notifications | Routes CloudWatch alarms to team email address |
+| **VPC** | Network isolation | Public subnet: API Gateway. Private subnets A+B: Lambda, Fargate, RDS. NAT Gateway for outbound. S3 VPC Gateway endpoint |
+| **SSM Parameter Store** | Secret management | DB_PASSWORD stored as SecureString at /cev/db_password; passed to Step Functions container overrides |
 
 ---
 
@@ -100,45 +152,51 @@ IAM ── least-privilege roles on every service boundary
 
 ```
 compliance-evidence-vault/
-├── sast/
-│   └── backend/
-│       ├── Dockerfile
-│       ├── package.json
-│       ├── server.js               # Express app — scan routes
-│       └── reportPipeline.js       # S3 upload + RDS metadata write
-├── pentest/
-│   └── backend/
-│       ├── Dockerfile
-│       ├── package.json
-│       ├── server.js               # Express app — pentest routes
-│       ├── test-target.js          # Deliberately vulnerable test API
-│       └── reportPipeline.js       # S3 upload + RDS metadata write
-├── dashboard/
-│   ├── Dockerfile
-│   ├── package.json
-│   ├── proxy/
-│   │   └── server.js               # Express proxy backend
+├── compute/
+│   ├── sast-scanner/
+│   │   ├── Dockerfile
+│   │   ├── requirements.txt          # boto3, psycopg2-binary, requests
+│   │   └── scanner.py                # 11-pattern SAST engine + RDS writer + S3 report upload
+│   ├── pentest-scanner/
+│   │   ├── Dockerfile
+│   │   ├── requirements.txt          # boto3, psycopg2-binary, requests
+│   │   └── scanner.py                # 6-category HTTP prober + RDS writer + S3 report upload
+│   ├── terraform/
+│   │   └── main.tf                   # ECR repos, ECS cluster, task definitions, CW log groups, S3 lifecycle
+│   └── local-test/
+│       ├── local_test_runner.py      # Mock-based test runner (no Docker/AWS needed)
+│       ├── sample_vulnerable_app.py  # SAST test target (10+ findings)
+│       └── docker-compose.yml        # Local postgres + localstack + vulnerable Flask app
+│
+├── api/
+│   ├── lambda/
+│   │   ├── handler.py                # cev-api-handler: job creation, presigned URL, SQS enqueue
+│   │   ├── status_updater.py         # cev-status-updater: job status updates, schema migration
+│   │   └── requirements.txt
+│   ├── terraform/
+│   │   ├── main.tf                   # API Gateway, Lambda functions, RDS, S3 bucket
+│   │   ├── variables.tf              # All values from GitHub Secrets via tfvars
+│   │   ├── lambda.tf                 # Lambda functions + VPC config
+│   │   ├── rds.tf                    # RDS instance + subnet group
+│   │   ├── s3.tf                     # Reports bucket + CORS + lifecycle
+│   │   ├── api_gateway.tf            # REST API + routes + usage plan
+│   │   └── outputs.tf                # rds_endpoint, api_url, s3_bucket_name, etc.
+│   ├── schema.sql                    # Shared source of truth — jobs + findings tables
 │   └── frontend/
-│       ├── src/
-│       │   ├── App.jsx
-│       │   ├── views/
-│       │   │   ├── ScanList.jsx    # All scans from RDS
-│       │   │   ├── ScanDetail.jsx  # Report from S3 + presigned download
-│       │   │   └── NewScan.jsx     # Trigger SAST or Pentest
-│       └── index.html
-├── lambda/
-│   └── dispatcher/
-│       ├── index.js                # Lambda handler
-│       └── package.json
+│       └── dashboard.html            # Single-page dashboard (polling, severity table, job detail)
+│
 ├── infra/
-│   ├── iam-roles.json              # IAM policy documents
-│   ├── lifecycle-rule.json         # S3 lifecycle rule config
-│   ├── task-definitions/
-│   │   ├── sast-task.json          # ECS task definition
-│   │   ├── pentest-task.json
-│   │   └── dashboard-task.json
-│   └── deploy.sh                   # Full deployment script
-├── docker-compose.yml              # Local development
+│   ├── terraform/
+│   │   ├── main.tf                   # VPC, subnets, SQS, Step Functions, CloudWatch, CloudTrail
+│   │   ├── variables.tf
+│   │   └── outputs.tf                # vpc_id, subnet IDs, SG IDs, SQS URL/ARN, state_machine_arn
+│   └── step_functions/
+│       └── state_machine.json        # Step Functions definition with WaitForUpload + ResultPath
+│
+├── .github/
+│   └── workflows/
+│       └── deploy.yml                # Unified CI/CD: build Lambda zip → API terraform → schema → compute terraform → Docker push
+│
 └── README.md
 ```
 
@@ -146,259 +204,409 @@ compliance-evidence-vault/
 
 ## Data Flow
 
-The end-to-end flow when a user triggers a scan:
+End-to-end flow for a SAST scan:
 
-1. **User opens dashboard** — accesses the ECS Fargate dashboard container directly via the public EC2/ECS DNS
-2. **Dashboard calls API Gateway** — sends `POST /scan` with `{ tool, target }`
-3. **API Gateway validates and forwards** — throttles at 100 req/s, validates request schema, forwards to Lambda
-4. **Lambda dispatches** — generates a `job_id`, inserts a `pending` row into RDS, calls `ecs.runTask()` with the appropriate task definition, returns `{ job_id }` immediately
-5. **Fargate scanner runs** — container starts, reads `JOB_ID` and `TARGET` from environment variables, runs the scan
-6. **Results written** — scanner uploads full JSON report to `s3://evidence-store/{tool}/{timestamp}-{job_id}.json`, updates RDS row to `status=complete` with severity counts and S3 key
-7. **Dashboard polls** — frontend polls `GET /scan/:jobId/status` every 3 seconds until complete, then fetches the report via a presigned S3 URL (15-minute expiry)
-8. **Archival** — S3 lifecycle rule moves objects from `evidence-store` to `archive-store` after 30 days automatically
+1. **User opens dashboard** at `http://localhost:8080/dashboard.html` (served locally via `python -m http.server 8080`)
+2. **Selects SAST**, picks a `.zip` file, clicks Submit Job
+3. **Dashboard POSTs to API Gateway** → Lambda `cev-api-handler` creates a job row in RDS (`status=PENDING`), returns `job_id` + presigned S3 PUT URL in <1 second
+4. **Browser uploads zip** directly to `s3://cev-reports-{account}/uploads/{job_id}/source.zip` via the presigned URL (no API Gateway involved)
+5. **Lambda enqueues message** to SQS with `{ job_id, scan_type, s3_key }`
+6. **Lambda `cev-orchestrator`** receives SQS trigger, starts a Step Functions execution
+7. **Step Functions routes**: SAST → `WaitForUpload` (30 seconds) → `RunSASTScanner`
+8. **Fargate task launches** in private subnet; environment overrides inject `JOB_ID`, `S3_KEY`, `DB_PASSWORD`
+9. **SAST scanner runs**: downloads zip from S3, runs 11 regex patterns, SHA-256 hashes report, writes findings to RDS `findings` table, uploads `report.json` to `s3://cev-reports-{account}/reports/sast/{job_id}/report.json`
+10. **Step Functions calls `MarkJobCompleted`** → Lambda `cev-status-updater` sets `status=COMPLETED`, clears `error_msg`
+11. **Dashboard auto-refreshes** every 10 seconds, shows COMPLETED badge; user clicks job to see severity breakdown
+
+For PENTEST: skip the file upload step; submit `target_url` in the POST body; Step Functions routes directly to `RunPentestScanner` with no wait.
 
 ---
 
 ## Prerequisites
 
-- Node.js 18+
+- Python 3.11+
 - Docker and Docker Compose
-- AWS CLI configured with Learner Lab credentials
-- Access to an AWS Academy Learner Lab environment
+- Node.js 18+ (for local dashboard serving)
+- Terraform 1.7+
+- AWS CLI configured with AWS Academy Learner Lab credentials
+- GitHub repository with Actions enabled
 
 ---
 
-## Setup and Deployment
+## Deployment
 
-### 1. Clone the repository
+Deployment is fully automated via GitHub Actions. The single workflow `deploy.yml` runs all steps in order.
 
-```bash
-git clone https://github.com/<your-org>/compliance-evidence-vault.git
-cd compliance-evidence-vault
+### One-time setup
+
+**1. Deploy Ishit's base infrastructure (Phase 1) — run once**
+
+Go to GitHub → Actions → "Phase 1 — Deploy VPC and base infrastructure" → Run workflow.
+
+This creates the VPC, subnets, SQS queue, Step Functions state machine, and security groups. Copy the output values into GitHub Secrets (see [GitHub Secrets](#github-secrets)).
+
+**2. Run the full deployment workflow**
+
+Go to GitHub → Actions → "Full deployment — all infrastructure in one account" → Run workflow.
+
+This runs 6 steps automatically:
+
+```
+Step 1: Build lambda_function.zip from handler.py + status_updater.py + dependencies
+Step 2: api/terraform  → RDS, S3, API Gateway, Lambda (imports existing resources first)
+Step 3a: Apply schema.sql via cev-status-updater Lambda
+Step 3b: Store DB_PASSWORD in SSM at /cev/db_password
+Step 4: compute/terraform → ECR repos, ECS cluster, Fargate task definitions
+Step 5: Build and push Docker images to ECR
+Step 6: Print deployment summary (API URL, RDS endpoint, task definition ARNs)
 ```
 
-### 2. Run locally with Docker Compose
+**3. Update Step Functions with real task definition ARNs**
+
+After Step 6, copy the SAST and Pentest task definition ARNs from the summary and run:
 
 ```bash
-docker-compose up
+aws stepfunctions update-state-machine \
+  --state-machine-arn "arn:aws:states:us-east-1:{account}:stateMachine:cev-scan-orchestrator" \
+  --definition file://infra/step_functions/state_machine.json
 ```
 
-This starts:
-- SAST scanner on `http://localhost:3001`
-- Pentest scanner on `http://localhost:3002`
-- Vulnerable test target on `http://localhost:4000`
-- Dashboard on `http://localhost:3000`
-
-### 3. Test the scanners locally
+**4. Enable the SQS event source mapping**
 
 ```bash
-# Test SAST scanner
-curl -X POST http://localhost:3001/scan/code \
-  -H "Content-Type: application/json" \
-  -d '{"code": "const password = \"admin123\";"}'
+MAPPING_UUID=$(aws lambda list-event-source-mappings \
+  --function-name cev-orchestrator \
+  --query "EventSourceMappings[0].UUID" --output text)
 
-# Test pentest scanner against the vulnerable target
-curl -X POST http://localhost:3002/scan \
-  -H "Content-Type: application/json" \
-  -d '{"targetUrl": "http://localhost:4000/api/users"}'
+aws lambda update-event-source-mapping \
+  --uuid $MAPPING_UUID --enabled
 ```
 
-### 4. Deploy to AWS
+**5. Configure S3 CORS for browser uploads**
 
 ```bash
-# Set your environment variables first (see below)
-chmod +x infra/deploy.sh
-./infra/deploy.sh
+aws s3api put-bucket-cors \
+  --bucket cev-reports-{account_id} \
+  --cors-configuration '{
+    "CORSRules": [{
+      "AllowedOrigins": ["*"],
+      "AllowedMethods": ["GET","PUT","POST","DELETE","HEAD"],
+      "AllowedHeaders": ["*"],
+      "ExposeHeaders": ["ETag"],
+      "MaxAgeSeconds": 3000
+    }]
+  }'
 ```
 
-The deploy script:
-1. Creates S3 buckets (`evidence-store`, `archive-store`, `cloudtrail-logs`)
-2. Enables versioning and SSE-S3 on `evidence-store`
-3. Applies the lifecycle rule (30-day transition to `archive-store`)
-4. Enables CloudTrail with log file validation
-5. Creates IAM roles with least-privilege policies
-6. Pushes Docker images to ECR
-7. Registers ECS task definitions
-8. Creates the ECS cluster and services
-9. Deploys Lambda dispatcher and wires API Gateway
+### Credential refresh (AWS Academy)
+
+AWS Academy session tokens expire every few hours. Before each deployment run, update these three GitHub Secrets with fresh values from AWS Academy → AWS Details → Show:
+
+- `AWS_ACCESS_KEY_ID`
+- `AWS_SECRET_ACCESS_KEY`
+- `AWS_SESSION_TOKEN`
+
+---
+
+## GitHub Secrets
+
+All infrastructure values are stored as GitHub Secrets. No values are hardcoded in Terraform or workflow files.
+
+| Secret | Description | Value source |
+|--------|-------------|--------------|
+| `AWS_ACCESS_KEY_ID` | AWS Academy session credential | AWS Academy → AWS Details |
+| `AWS_SECRET_ACCESS_KEY` | AWS Academy session credential | AWS Academy → AWS Details |
+| `AWS_SESSION_TOKEN` | AWS Academy session token | AWS Academy → AWS Details |
+| `AWS_ACCOUNT_ID` | AWS account ID | `126573932591` |
+| `DB_PASSWORD` | RDS master password |  |
+| `VPC_ID` | VPC from Phase 1 | Phase 1 workflow output |
+| `PRIVATE_SUBNET_A` | Private subnet A ID | Phase 1 workflow output |
+| `PRIVATE_SUBNET_B` | Private subnet B ID | Phase 1 workflow output |
+| `PUBLIC_SUBNET` | Public subnet ID | Phase 1 workflow output |
+| `LAMBDA_SG_ID` | Lambda security group ID | Phase 1 workflow output |
+| `RDS_SG_ID` | RDS security group ID | Phase 1 workflow output |
+| `FARGATE_SG_ID` | Fargate security group ID | Phase 1 workflow output |
+| `SQS_QUEUE_URL` | SQS queue URL | Phase 1 workflow output |
+| `SQS_QUEUE_ARN` | SQS queue ARN | Phase 1 workflow output |
+| `STATE_MACHINE_ARN` | Step Functions ARN | Phase 1 workflow output |
 
 ---
 
 ## Environment Variables
 
-Never hardcode credentials. All secrets are stored in AWS Secrets Manager and passed as environment variables to ECS task definitions.
+Environment variables are never hardcoded. They are injected at runtime by Terraform (into Lambda) and by Step Functions container overrides (into Fargate tasks).
 
-| Variable | Used by | Description |
+### Lambda functions
+
+| Variable | Lambda | Description |
+|----------|--------|-------------|
+| `DB_HOST` | both | RDS endpoint (set by Terraform from `aws_db_instance.cev_postgres.address`) |
+| `DB_NAME` | both | `compliancevault` |
+| `DB_USER` | both | `cevadmin` |
+| `DB_PASSWORD` | both | From GitHub Secret `DB_PASSWORD` via Terraform tfvars |
+| `S3_BUCKET` | cev-api-handler | Reports bucket name |
+| `SQS_URL` | cev-api-handler | SQS queue URL |
+
+### ECS Fargate tasks (injected by Step Functions at runtime)
+
+| Variable | Scanner | Description |
 |----------|---------|-------------|
-| `DB_SECRET_ARN` | Fargate, Lambda | ARN of the RDS password secret in Secrets Manager |
-| `DB_HOST` | Fargate, Lambda | RDS endpoint hostname |
-| `DB_NAME` | Fargate, Lambda | PostgreSQL database name |
-| `S3_EVIDENCE_BUCKET` | Fargate | Name of the evidence-store S3 bucket |
-| `S3_ARCHIVE_BUCKET` | Fargate | Name of the archive-store S3 bucket |
-| `ECS_CLUSTER` | Lambda | ECS cluster name for RunTask calls |
-| `SAST_TASK_DEF` | Lambda | ECS task definition ARN for SAST scanner |
-| `PENTEST_TASK_DEF` | Lambda | ECS task definition ARN for pentest scanner |
-| `JOB_ID` | Fargate scanner | Injected at runtime by Lambda per scan |
-| `TARGET` | Fargate scanner | Scan target (file path or URL), injected by Lambda |
-
-> **Important:** Never commit `.env` files or hardcode any of the above values. The project rubric explicitly penalizes hardcoded credentials.
+| `REPORT_BUCKET` | both | S3 bucket for reports (baked into task definition) |
+| `DB_HOST` | both | RDS endpoint (baked into task definition) |
+| `DB_NAME` | both | `compliancevault` (baked into task definition) |
+| `DB_USER` | both | `cevadmin` (baked into task definition) |
+| `DB_SSLMODE` | both | `require` |
+| `JOB_ID` | both | Injected per execution by Step Functions container override |
+| `S3_KEY` | SAST | Injected per execution by Step Functions container override |
+| `TARGET_URL` | Pentest | Injected per execution by Step Functions container override |
+| `DB_PASSWORD` | both | Injected per execution by Step Functions container override (from SSM) |
 
 ---
 
 ## Database Schema
 
 ```sql
-CREATE TABLE scans (
-  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  job_id       UUID NOT NULL UNIQUE,
-  tool         TEXT NOT NULL CHECK (tool IN ('sast', 'pentest')),
-  target       TEXT NOT NULL,
-  status       TEXT NOT NULL DEFAULT 'pending'
-                 CHECK (status IN ('pending', 'running', 'complete', 'failed')),
-  critical     INT DEFAULT 0,
-  high         INT DEFAULT 0,
-  medium       INT DEFAULT 0,
-  low          INT DEFAULT 0,
-  s3_key       TEXT,
-  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  completed_at TIMESTAMPTZ
+-- api/schema.sql
+-- Shared source of truth between Shubham's Lambda and Ankita's scanners
+
+CREATE TABLE IF NOT EXISTS jobs (
+  id         UUID PRIMARY KEY,
+  scan_type  TEXT NOT NULL CHECK (scan_type IN ('SAST', 'PENTEST')),
+  status     TEXT NOT NULL DEFAULT 'PENDING'
+               CHECK (status IN ('PENDING', 'RUNNING', 'COMPLETED', 'FAILED')),
+  s3_key     TEXT,
+  error_msg  TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_scans_created_at ON scans (created_at DESC);
-CREATE INDEX idx_scans_job_id     ON scans (job_id);
+CREATE TABLE IF NOT EXISTS findings (
+  id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  job_id     UUID NOT NULL REFERENCES jobs(id),
+  severity   TEXT NOT NULL CHECK (severity IN ('HIGH', 'MEDIUM', 'LOW')),
+  vuln_type  TEXT NOT NULL,
+  detail     TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_findings_job_id ON findings (job_id);
+CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs (created_at DESC);
 ```
+
+Schema is applied on first deployment via the `cev-status-updater` Lambda's `run_schema` action. Re-running is safe — all statements use `IF NOT EXISTS`.
 
 ---
 
 ## S3 Bucket Structure
 
-### evidence-store
-
 ```
-evidence-store/
-├── sast/
-│   └── 2026-05-28T14:00:00Z-<job_id>.json
-└── pentest/
-    └── 2026-05-28T15:30:00Z-<job_id>.json
-```
-
-Settings: versioning enabled, SSE-S3 encryption, public access blocked, bucket policy restricts writes to `fargate-scanner-role` only.
-
-### archive-store
-
-Same key structure as `evidence-store`. Objects are transitioned here automatically by the S3 lifecycle rule after 30 days. Settings: same encryption, object lock for compliance.
-
-### cloudtrail-logs
-
-```
-cloudtrail-logs/
-└── AWSLogs/<account-id>/CloudTrail/<region>/<year>/<month>/<day>/
-    └── <account-id>_CloudTrail_<region>_<timestamp>_<hash>.json.gz
+cev-reports-{account_id}/
+├── uploads/
+│   └── {job_id}/
+│       └── source.zip          ← uploaded by browser via presigned URL; expires after 7 days
+└── reports/
+    ├── sast/
+    │   └── {job_id}/
+    │       └── report.json     ← SHA-256 hashed; written by SAST scanner
+    └── pentest/
+        └── {job_id}/
+            └── report.json     ← SHA-256 hashed; written by Pentest scanner
 ```
 
-Log file validation is enabled — each log file includes a digest file with a hash chain so any tampering is detectable.
+**Bucket settings:** public access fully blocked, CORS configured for browser PUT uploads, versioning disabled (SHA-256 hash in report body provides integrity).
+
+**Lifecycle rules:**
+
+| Prefix | Transition | Action |
+|--------|-----------|--------|
+| `reports/` | 90 days | Transition to GLACIER |
+| `reports/` | 2555 days (7 years) | Expire |
+| `uploads/` | 7 days | Expire |
 
 ---
 
 ## Retention Policy
 
-| Phase | Storage | Duration | Access |
-|-------|---------|----------|--------|
-| Active | S3 evidence-store | 0 to 30 days | `fargate-scanner-role` (write), `dashboard-role` (read) |
-| Archive | S3 archive-store | 30 days to 1 year | `evidence-reader-role` (read-only) |
-| Deletion | — | After 1 year | Automated by S3 lifecycle expiration rule |
+| Phase | Storage class | Duration | Who can access |
+|-------|--------------|----------|----------------|
+| Active | S3 Standard | 0–90 days | Lambda (write), Fargate (write), dashboard (read via API) |
+| Archive | S3 Glacier | 90 days – 7 years | LabRole (restore request required) |
+| Deletion | — | After 7 years | Automated by S3 lifecycle expiration |
 
-This policy is framed against **SOC 2 Type II** requirements, which mandate that security testing evidence be retained for a minimum of 12 months and be accessible to auditors on request.
+This policy satisfies **SOC 2 Type II**, **HIPAA**, and **PCI-DSS** minimum retention requirements. CloudTrail WORM logs provide the immutable API access record that auditors require alongside the scan reports.
 
 ---
 
 ## API Reference
 
-### API Gateway — `POST /scan`
+All endpoints require the `x-api-key` header. The API key is managed by API Gateway and can be retrieved via:
 
-Triggers a new scan asynchronously.
+```bash
+aws apigateway get-api-keys --include-values \
+  --query "items[?contains(name,'cev')].value" --output text
+```
 
-**Request:**
+---
+
+### POST /jobs — Create a scan job
+
+**SAST request:**
 ```json
 {
-  "tool": "sast",
-  "target": "/path/to/source"
+  "scan_type": "SAST"
 }
 ```
 
-**Response:**
+**SAST response** `201`:
 ```json
 {
-  "job_id": "550e8400-e29b-41d4-a716-446655440000",
-  "status": "pending"
+  "job_id": "9bc723f2-3795-4578-99a9-55e598176a73",
+  "upload_url": "https://cev-reports-{account}.s3.amazonaws.com/uploads/{job_id}/source.zip?X-Amz-...",
+  "s3_key": "uploads/9bc723f2-3795-4578-99a9-55e598176a73/source.zip",
+  "status": "PENDING"
+}
+```
+
+Upload your zip to `upload_url` via HTTP PUT immediately after receiving the response (URL expires in 1 hour).
+
+**PENTEST request:**
+```json
+{
+  "scan_type": "PENTEST",
+  "target_url": "https://example.com"
+}
+```
+
+**PENTEST response** `201`:
+```json
+{
+  "job_id": "45644d23-9b09-4c73-a47f-ea626e31e7e9",
+  "status": "PENDING",
+  "s3_key": "uploads/45644d23-9b09-4c73-a47f-ea626e31e7e9/source.zip"
+}
+```
+
+PENTEST jobs are queued immediately — no file upload required.
+
+---
+
+### GET /jobs/{id} — Get job status and findings
+
+**Response** `200`:
+```json
+{
+  "job_id": "9bc723f2-3795-4578-99a9-55e598176a73",
+  "scan_type": "SAST",
+  "status": "COMPLETED",
+  "s3_key": "reports/sast/9bc723f2-3795-4578-99a9-55e598176a73/report.json",
+  "error_msg": null,
+  "created_at": "2026-06-15 22:08:56.968181+00:00",
+  "updated_at": "2026-06-15 22:12:11.938896+00:00",
+  "findings": [
+    {
+      "finding_id": "2fc504f4-7168-4d91-8bde-c24355766864",
+      "severity": "HIGH",
+      "vuln_type": "HARDCODED_SECRET",
+      "detail": "Hardcoded credential or secret detected in source code [vuln.py:2]",
+      "created_at": "2026-06-15 22:12:11.938896+00:00"
+    },
+    {
+      "finding_id": "e0a3d98a-5a99-4693-b6a5-49d440e5ae4c",
+      "severity": "HIGH",
+      "vuln_type": "COMMAND_INJECTION",
+      "detail": "Potential OS command injection via unsanitised input [vuln.py:3]",
+      "created_at": "2026-06-15 22:12:11.938896+00:00"
+    }
+  ]
 }
 ```
 
 ---
 
-### Dashboard Proxy — `GET /scan/:jobId/status`
+### GET /jobs — List all jobs
 
-Polls scan status from RDS.
-
-**Response:**
+**Response** `200`:
 ```json
 {
-  "job_id": "550e8400-e29b-41d4-a716-446655440000",
-  "status": "complete",
-  "critical": 2,
-  "high": 5,
-  "medium": 3,
-  "low": 1,
-  "completed_at": "2026-05-28T14:02:33Z"
+  "jobs": [
+    {
+      "job_id": "9bc723f2-3795-4578-99a9-55e598176a73",
+      "scan_type": "SAST",
+      "status": "COMPLETED",
+      "created_at": "2026-06-15 22:08:56.968181+00:00",
+      "updated_at": "2026-06-15 22:12:11.938896+00:00"
+    }
+  ]
 }
 ```
 
 ---
 
-### Dashboard Proxy — `GET /scan/:jobId/download`
+## Local Testing
 
-Returns a presigned S3 URL valid for 15 minutes.
+Test both scanners locally without Docker or AWS:
 
-**Response:**
-```json
-{
-  "url": "https://evidence-store.s3.amazonaws.com/sast/2026-05-28T14:00:00Z-<job_id>.json?X-Amz-Expires=900&..."
-}
+```bash
+cd compute/local-test
+
+# SAST — scans sample_vulnerable_app.py
+python local_test_runner.py sast
+# Expected: 10 findings (6 HIGH, 1 MEDIUM, 3 LOW)
+
+# Pentest — offline mode with mock HTTP responses
+python local_test_runner.py pentest --offline
+# Expected: 29 findings across 6 probe categories
+
+# Both
+python local_test_runner.py all --offline
 ```
 
----
+The test runner mocks boto3 and psycopg2 so no AWS credentials or database are needed.
 
-### Dashboard Proxy — `GET /scans`
+To run against a real local target:
 
-Returns all scan records from RDS ordered by date descending.
+```bash
+docker-compose up          # starts postgres + localstack + vulnerable Flask app
+python local_test_runner.py pentest --url http://localhost:8080
+```
 
-**Response:**
-```json
-[
-  {
-    "job_id": "...",
-    "tool": "sast",
-    "target": "/src/app.js",
-    "status": "complete",
-    "critical": 2,
-    "high": 5,
-    "medium": 3,
-    "low": 1,
-    "created_at": "2026-05-28T14:00:00Z",
-    "completed_at": "2026-05-28T14:02:33Z"
-  }
-]
+To serve the dashboard locally:
+
+```bash
+cd api/frontend
+python -m http.server 8080
+# Open http://localhost:8080/dashboard.html
+# Enter your API Gateway URL and API key in the config bar
 ```
 
 ---
 
 ## Contributors
 
-| Name | Role |
-|------|------|
-| **Shubham Kumar** | Infrastructure, Lambda + API Gateway, CloudTrail, IAM, architecture diagram, tradeoff analysis, retention policy |
-| **Ankita Das** | Docker, ECS Fargate scanner deployment, S3 upload pipeline, RDS write logic, evidence storage demo |
-| **Ishit Arhatia** | ECS Fargate dashboard, Node.js proxy backend, React frontend, audit log explanation document |
+| Name | Role | Components owned |
+|------|------|-----------------|
+| **Ishit Arhatia** | Infrastructure & Orchestration | VPC, SQS + DLQ, Step Functions, Lambda orchestrator, CloudWatch alarms, SNS, CloudTrail, `infra/terraform/` |
+| **Ankita Das** | Compute & Scanners | SAST scanner, Pentest scanner, ECS Fargate, ECR, S3 lifecycle, `compute/` |
+| **Shubham Kumar** | API & Frontend | API Gateway, Lambda handler + status updater, RDS PostgreSQL, browser dashboard, `api/` |
+
+---
+
+## Deployed Resources
+
+All resources run in `us-east-1` under account `126573932591`.
+
+| Resource | Name / ID |
+|----------|-----------|
+| API Gateway | `https://7pns6j1i9e.execute-api.us-east-1.amazonaws.com/prod` |
+| S3 bucket | `cev-reports-126573932591` |
+| RDS | `cev-postgres.cmppftqgluub.us-east-1.rds.amazonaws.com` |
+| ECS cluster | `compliance-vault-compute-cluster` |
+| SAST task def | `compliance-vault-compute-sast:3` |
+| Pentest task def | `compliance-vault-compute-pentest:3` |
+| ECR (SAST) | `126573932591.dkr.ecr.us-east-1.amazonaws.com/compliance-vault-compute-sast-scanner` |
+| ECR (Pentest) | `126573932591.dkr.ecr.us-east-1.amazonaws.com/compliance-vault-compute-pentest-scanner` |
+| Step Functions | `cev-scan-orchestrator` |
+| SSM secret | `/cev/db_password` |
 
 ---
 
